@@ -1,6 +1,5 @@
 import os
 import shutil
-import urllib.parse
 threading_mod = __import__('threading')
 
 # =========================================================
@@ -50,7 +49,7 @@ if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA
+# 3. LÓGICA DE TU BOT DE MÚSICA (SoundCloud Search Nativo)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -149,11 +148,10 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
-    # Construimos una URL de búsqueda compatible mediante una instancia pública de Invidious
+    # Usamos la búsqueda nativa y oficial de SoundCloud en yt-dlp
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
-        encoded_query = urllib.parse.quote(busqueda)
-        query = f"https://invidious.nerdvpn.de/search?q={encoded_query}"
+        query = f"scsearch1:{busqueda}"
 
     try:
         loop = asyncio.get_event_loop()
