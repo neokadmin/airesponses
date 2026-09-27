@@ -59,7 +59,7 @@ else:
     print("⚠️ Advertencia: No se encontró el archivo de cookies en /etc/secrets/cookies.txt")
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA
+# 3. LÓGICA DE TU BOT DE MÚSICA (Streaming en vivo)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -92,15 +92,9 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones de yt-dlp actualizadas con clientes alternativos para evitar el error de formato
+# Opciones de yt-dlp para extracción de metadatos y enlace de streaming en vivo
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
-    'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '192',
-    }],
     'noplaylist': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
@@ -118,22 +112,20 @@ YDL_OPTIONS = {
 
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn',
+    'options': '-vn -b:a 192k',
 }
 
-def descargar_audio_sync(query):
+def obtener_stream_url_sync(query):
     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-        info = ydl.extract_info(query, download=True)
+        info = ydl.extract_info(query, download=False) # <--- download=False para streaming directo en vivo
         if 'entries' in info:
             if not info['entries']:
                 raise Exception("No se encontraron resultados en YouTube.")
             info = info['entries'][0]
         
-        filename = ydl.prepare_filename(info)
-        base, _ = os.path.splitext(filename)
-        mp3_filename = base + ".mp3"
-        
-        return mp3_filename, info.get('title', 'Audio desconocido')
+        stream_url = info.get('url')
+        titulo = info.get('title', 'Audio desconocido')
+        return stream_url, titulo
 
 @bot.tree.command(name="join", description="Une al bot a tu canal de voz actual.")
 async def join(interaction: discord.Interaction):
@@ -147,10 +139,10 @@ async def join(interaction: discord.Interaction):
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
-@bot.tree.command(name="play", description="Descarga y reproduce música de YouTube sin bloqueos.")
+@bot.tree.command(name="play", description="Reproduce música de YouTube en streaming directo.")
 @app_commands.describe(busqueda="Nombre de la canción o enlace de YouTube")
 async def play(interaction: discord.Interaction, busqueda: str):
-    await interaction.response.send_message(f"⏳ Buscando en YouTube: **{busqueda}**...", ephemeral=False)
+    await interaction.response.send_message(f"⏳ Conectando stream de YouTube: **{busqueda}**...", ephemeral=False)
     
     if not interaction.guild.voice_client:
         if interaction.user.voice:
@@ -171,32 +163,24 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     try:
         loop = asyncio.get_event_loop()
-        filepath, titulo = await loop.run_in_executor(None, descargar_audio_sync, query)
+        stream_url, titulo = await loop.run_in_executor(None, obtener_stream_url_sync, query)
     except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error al descargar de YouTube: {e}")
+        await interaction.edit_original_response(content=f"❌ Error al obtener el stream de YouTube: {e}")
         return
 
     def after_playing(error):
         if error:
             print(f"Error en reproducción: {error}")
-        if os.path.exists(filepath):
-            try:
-                os.remove(filepath)
-                print(f"🗑️ Archivo temporal eliminado: {filepath}")
-            except Exception as ex:
-                print(f"No se pudo eliminar el archivo: {ex}")
 
     try:
         if vc.is_playing():
             vc.stop()
         
-        source = discord.FFmpegPCMAudio(filepath, **FFMPEG_OPTIONS)
+        source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
         vc.play(source, after=after_playing)
-        await interaction.edit_original_response(content=f"🎵 Reproduciendo ahora: **{titulo}**")
+        await interaction.edit_original_response(content=f"🎵 Reproduciendo en vivo: **{titulo}**")
     except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error al iniciar el audio: {e}")
-        if os.path.exists(filepath):
-            os.remove(filepath)
+        await interaction.edit_original_response(content=f"❌ Error al iniciar el streaming: {e}")
 
 @bot.tree.command(name="background", description="Escucha el canal de voz en segundo plano sin reproducir.")
 async def background(interaction: discord.Interaction):
