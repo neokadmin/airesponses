@@ -1,47 +1,48 @@
-import discord
-from discord.ext import commands
-from discord.ext import voice_recv
-from discord import app_commands
-import yt_dlp
 import os
-import asyncio
-import shutil
-import tempfile
-from dotenv import load_dotenv
-
-# Librerías del sistema para el servidor keep-alive
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-load_dotenv()
-
 # =========================================================
-# 1. SERVIDOR WEB EN SEGUNDO PLANO (Para UptimeRobot)
+# 1. ARRANCAR EL SERVIDOR WEB AL INSTANTE (PRIMERA LÍNEA)
 # =========================================================
 class KeepAliveHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Bot activo 24/7")
+        self.wfile.write(b"Bot activo y respondiendo peticiones")
 
     def log_message(self, format, *args):
-        return  # Evita llenar la consola de pings
+        return  # Silencia los logs de pings repetitivos en la consola
 
 def iniciar_servidor_web():
-    # Render exige por defecto el puerto 10000 o el que indique su variable PORT
-    puerto = int(os.environ.get("PORT", 10000)) 
+    # Render asigna dinámicamente un puerto. Si no existe, usamos el 10000 por defecto.
+    puerto = int(os.environ.get("PORT", 10000))
     servidor = HTTPServer(("0.0.0.0", puerto), KeepAliveHandler)
-    print(f"📡 Puerto HTTP {puerto} abierto con exito para Render.")
+    print(f"📡 Servidor HTTP Keep-Alive abierto con exito en el puerto {puerto}")
     servidor.serve_forever()
 
-# ARRANQUE PREVIO: Se lanza el hilo antes de configurar cualquier objeto de Discord
+# Forzamos al sistema a crear y lanzar el hilo antes de importar librerías pesadas
 hilo_servidor = threading.Thread(target=iniciar_servidor_web, daemon=True)
 hilo_servidor.start()
 
+# =========================================================
+# 2. IMPORTS RESTANTES DEL PROYECTO
+# =========================================================
+import discord
+from discord.ext import commands
+from discord.ext import voice_recv
+from discord import app_commands
+import yt_dlp
+import asyncio
+import shutil
+import tempfile
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # =========================================================
-# 2. LÓGICA DE TU BOT DE MÚSICA
+# 3. LÓGICA DE TU BOT DE MÚSICA
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -162,6 +163,6 @@ async def leave(interaction: discord.Interaction):
         await interaction.response.send_message("❌ No estoy en ningún canal de voz.", ephemeral=True)
 
 # =========================================================
-# 3. EJECUCIÓN FINAL
+# 4. EJECUCIÓN FINAL DE DISCORD
 # =========================================================
 bot.run(os.getenv("DISCORD_TOKEN"))
