@@ -1,11 +1,12 @@
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import urllib.parse
+import shutil
+threading_mod = __import__('threading')
 
 # =========================================================
 # 1. SERVIDOR KEEP-ALIVE (Soporte UptimeRobot Gratis)
 # =========================================================
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 class KeepAliveHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -19,15 +20,15 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        return  # Silencia los logs de pings en la consola de Render
+        return  # Silencia los logs de pings
 
 def iniciar_servidor_web():
     puerto = int(os.environ.get("PORT", 10000))
     servidor = HTTPServer(("0.0.0.0", puerto), KeepAliveHandler)
-    print(f"📡 Servidor HTTP Keep-Alive (GET/HEAD) abierto en el puerto {puerto}")
+    print(f"📡 Servidor HTTP Keep-Alive abierto en el puerto {puerto}")
     servidor.serve_forever()
 
-hilo_servidor = threading.Thread(target=iniciar_servidor_web, daemon=True)
+hilo_servidor = threading_mod.Thread(target=iniciar_servidor_web, daemon=True)
 hilo_servidor.start()
 
 # =========================================================
@@ -43,8 +44,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+TEMP_DIR = "temp_audio"
+if not os.path.exists(TEMP_DIR):
+    os.makedirs(TEMP_DIR)
+
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (Optimizado para Bandcamp)
+# 3. LÓGICA DE TU BOT DE MÚSICA (Descarga Temporal y Borrado)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -77,17 +82,18 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Configuración limpia para Bandcamp (Sin cookies, sin tokens, sin inicio de sesión)
+# Configuración para descargar el archivo MP3 temporalmente
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
-    'extractaudio': True,
-    'audioformat': 'mp3',
-    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
-    'restrictfilenames': True,
+    'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '192',
+    }],
     'noplaylist': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
-    'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
@@ -99,9 +105,18 @@ FFMPEG_OPTIONS = {
     'options': '-vn',
 }
 
-def extraer_info_sync(query):
+def descargar_audio_sync(query):
     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-        return ydl.extract_info(query, download=False)
+        info = ydl.extract_info(query, download=True)
+        if 'entries' in info:
+            info = info['entries'][0]
+        
+        filename = ydl.prepare_filename(info)
+        # Cambiamos la extensión a .mp3 ya que el postprocessor la convierte
+        base, _ = os.path.splitext(filename)
+        mp3_filename = base + ".mp3"
+        
+        return mp3_filename, info.get('title', 'Audio desconocido')
 
 @bot.tree.command(name="join", description="Une al bot a tu canal de voz actual.")
 async def join(interaction: discord.Interaction):
@@ -115,8 +130,8 @@ async def join(interaction: discord.Interaction):
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
-@bot.tree.command(name="play", description="Reproduce música desde Bandcamp por nombre o enlace.")
-@app_commands.describe(busqueda="Enlace de Bandcamp o nombre de la canción/artista")
+@bot.tree.command(name="play", description="Descarga temporalmente y reproduce música de YouTube sin bloqueos en vivo.")
+@app_commands.describe(busqueda="Enlace de YouTube o nombre de la canción")
 async def play(interaction: discord.Interaction, busqueda: str):
     await interaction.response.defer()
     
@@ -129,39 +144,40 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
-    # Si no pasan un enlace directo, transformamos la búsqueda en una URL válida de Bandcamp
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
-        encoded_query = urllib.parse.quote(busqueda)
-        query = f"https://bandcamp.com/search?q={encoded_query}"
+        query = f"ytsearch1:{busqueda}"
 
     try:
         loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, extraer_info_sync, query)
-        
-        if 'entries' in info:
-            if not info['entries']:
-                await interaction.followup.send("❌ No se encontraron resultados en Bandcamp para tu búsqueda.")
-                return
-            video_data = info['entries'][0]
-        else:
-            video_data = info
-            
-        url = video_data['url']
-        titulo = video_data['title']
+        filepath, titulo = await loop.run_in_executor(None, descargar_audio_sync, query)
     except Exception as e:
-        await interaction.followup.send(f"❌ Error al procesar la búsqueda: {e}")
+        await interaction.followup.send(f"❌ Error al descargar el archivo: {e}")
         return
+
+    # Definimos qué pasa cuando la canción termina de reproducirse
+    def after_playing(error):
+        if error:
+            print(f"Error en reproducción: {error}")
+        # Borrar el archivo MP3 temporal al finalizar la canción
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+                print(f"🗑️ Archivo temporal eliminado: {filepath}")
+            except Exception as ex:
+                print(f"No se pudo eliminar el archivo: {ex}")
 
     try:
         if vc.is_playing():
             vc.stop()
         
-        source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
-        vc.play(source)
-        await interaction.followup.send(f"🎵 Reproduciendo ahora (Bandcamp): **{titulo}**")
+        source = discord.FFmpegPCMAudio(filepath, **FFMPEG_OPTIONS)
+        vc.play(source, after=after_playing)
+        await interaction.followup.send(f"🎵 Descargado y reproduciendo: **{titulo}**")
     except Exception as e:
-        await interaction.followup.send(f"❌ Error al reproducir audio: {e}")
+        await interaction.followup.send(f"❌ Error al iniciar el audio: {e}")
+        if os.path.exists(filepath):
+            os.remove(filepath)
 
 @bot.tree.command(name="background", description="Escucha el canal de voz en segundo plano sin reproducir.")
 async def background(interaction: discord.Interaction):
