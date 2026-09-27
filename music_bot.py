@@ -16,18 +16,16 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
         return  # Silencia los logs de pings repetitivos en la consola
 
 def iniciar_servidor_web():
-    # Render asigna dinámicamente un puerto. Si no existe, usamos el 10000 por defecto.
     puerto = int(os.environ.get("PORT", 10000))
     servidor = HTTPServer(("0.0.0.0", puerto), KeepAliveHandler)
     print(f"📡 Servidor HTTP Keep-Alive abierto con exito en el puerto {puerto}")
     servidor.serve_forever()
 
-# Forzamos al sistema a crear y lanzar el hilo antes de importar librerías pesadas
 hilo_servidor = threading.Thread(target=iniciar_servidor_web, daemon=True)
 hilo_servidor.start()
 
 # =========================================================
-# 2. IMPORTS RESTANTES DEL PROYECTO
+# 2. IMPORTS DEL PROYECTO
 # =========================================================
 import discord
 from discord.ext import commands
@@ -51,7 +49,8 @@ def load_opus_lib():
         except Exception as e:
             print(f"Error cargando opus de forma nativa: {e}")
 
-class VoiceActivitySink(voice_recv.VoiceRecvSink):
+# CORRECCIÓN AQUÍ: Cambiado voice_recv.VoiceRecvSink por voice_recv.AudioSink
+class VoiceActivitySink(voice_recv.AudioSink):
     def __init__(self):
         super().__init__()
     def want_opus(self):
@@ -103,7 +102,8 @@ async def join(interaction: discord.Interaction):
     if interaction.guild.voice_client:
         await interaction.guild.voice_client.move_to(channel)
     else:
-        await channel.connect(cls=voice_recv.VoiceClient)
+        # Se requiere VoiceRecvClient para habilitar la recepción de voz en canales
+        await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
 @bot.tree.command(name="play", description="Reproduce música desde una URL de YouTube o palabras clave.")
@@ -113,7 +113,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
     
     if not interaction.guild.voice_client:
         if interaction.user.voice:
-            await interaction.user.voice.channel.connect(cls=voice_recv.VoiceClient)
+            await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
         else:
             await interaction.followup.send("❌ ¡Debes estar en un canal de voz!")
             return
