@@ -1,5 +1,6 @@
 import os
 import threading
+import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =========================================================
@@ -38,14 +39,32 @@ from discord.ext import voice_recv
 from discord import app_commands
 import yt_dlp
 import asyncio
-import shutil
-import tempfile
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA
+# 3. GESTIÓN DE COOKIES DESDE RENDER (ENV)
+# =========================================================
+def get_cookies_file():
+    """
+    Crea un archivo temporal de cookies si existe la variable de entorno COOKIES_TXT,
+    o busca un archivo local 'cookies.txt'. Esto evita fallos en Render.
+    """
+    cookies_content = os.getenv("COOKIES_TXT")
+    if cookies_content:
+        temp_cookies = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8")
+        temp_cookies.write(cookies_content)
+        temp_cookies.close()
+        return temp_cookies.name
+    elif os.path.exists('cookies.txt'):
+        return 'cookies.txt'
+    return None
+
+COOKIE_PATH = get_cookies_file()
+
+# =========================================================
+# 4. LÓGICA DE TU BOT DE MÚSICA
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -78,7 +97,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Configuración del cliente iOS oficial para evadir los bloqueos de IP en Render
+# Configuración optimizada para evitar bloqueos en Render sin requerir tokens de iOS
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -92,12 +111,10 @@ YDL_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
-    'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+    'cookiefile': COOKIE_PATH,
     'extractor_args': {
         'youtube': {
-            'client': ['ios'],  # Bypass mediante la API nativa de la app de iPhone
-            'po_token': [os.environ.get('YT_PO_TOKEN', '')],
-            'visitor_data': [os.environ.get('YT_VISITOR_DATA', '')]
+            'player_client': ['web_embedded', 'default']
         }
     }
 }
@@ -145,12 +162,11 @@ async def play(interaction: discord.Interaction, busqueda: str):
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(None, extraer_info_sync, query)
         
-        # CORRECCIÓN DE ÍNDICE: Accedemos explícitamente al primer objeto [0] de la lista entries
         if 'entries' in info:
             if not info['entries']:
                 await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
                 return
-            video_data = info['entries'][0]  # <-- El [0] resuelve el TypeError de forma definitiva
+            video_data = info['entries'][0]
         else:
             video_data = info
             
@@ -192,6 +208,6 @@ async def leave(interaction: discord.Interaction):
         await interaction.response.send_message("❌ No estoy en ningún canal de voz.", ephemeral=True)
 
 # =========================================================
-# 4. EJECUCIÓN FINAL DE DISCORD
+# 5. EJECUCIÓN FINAL DE DISCORD
 # =========================================================
 bot.run(os.getenv("DISCORD_TOKEN"))
