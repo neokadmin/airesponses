@@ -7,14 +7,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # =========================================================
 class KeepAliveHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Responde a pings tipo GET (Navegador)
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
         self.wfile.write(b"Bot activo y respondiendo peticiones GET")
 
     def do_HEAD(self):
-        # Responde a pings tipo HEAD (Obligatorio para UptimeRobot gratis)
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
@@ -23,13 +21,11 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
         return  # Silencia los logs de pings en la consola de Render
 
 def iniciar_servidor_web():
-    # Render asigna el puerto en la variable PORT. Por defecto usa el 10000.
     puerto = int(os.environ.get("PORT", 10000))
     servidor = HTTPServer(("0.0.0.0", puerto), KeepAliveHandler)
     print(f"📡 Servidor HTTP Keep-Alive (GET/HEAD) abierto en el puerto {puerto}")
     servidor.serve_forever()
 
-# Forzamos el lanzamiento del hilo en paralelo inmediatamente antes de cargar Discord
 hilo_servidor = threading.Thread(target=iniciar_servidor_web, daemon=True)
 hilo_servidor.start()
 
@@ -49,7 +45,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (Corregida)
+# 3. LÓGICA DE TU BOT DE MÚSICA
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -58,7 +54,6 @@ def load_opus_lib():
         except Exception as e:
             print(f"Error cargando opus de forma nativa: {e}")
 
-# CLASE CORREGIDA: Hereda de AudioSink e incluye métodos abstractos obligatorios
 class VoiceActivitySink(voice_recv.AudioSink):
     def __init__(self):
         super().__init__()
@@ -83,7 +78,6 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Parámetros definitivos: Se implementa bypass de cliente 'mweb' para servidores en la nube
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -101,7 +95,7 @@ YDL_OPTIONS = {
     'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
     'extractor_args': {
         'youtube': {
-            'client': ['mweb'],  # Forzamos la API móvil para saltar el botcheck
+            'client': ['mweb'],  # Bypass móvil para evadir bloqueo antibot en Render
             'po_token': [os.environ.get('YT_PO_TOKEN', '')],
             'visitor_data': [os.environ.get('YT_VISITOR_DATA', '')]
         }
@@ -122,7 +116,6 @@ async def join(interaction: discord.Interaction):
     if interaction.guild.voice_client:
         await interaction.guild.voice_client.move_to(channel)
     else:
-        # Se requiere VoiceRecvClient oficial de la extensión para habilitar audio
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
@@ -143,10 +136,18 @@ async def play(interaction: discord.Interaction, busqueda: str):
     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
         try:
             info = ydl.extract_info(busqueda, download=False)
+            
+            # CORRECCIÓN DE EXTRACCIÓN: Soporta tanto URLs como búsquedas de texto
             if 'entries' in info:
-                info = info['entries']
-            url = info['url']
-            titulo = info['title']
+                if not info['entries']:
+                    await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
+                    return
+                video_data = info['entries'][0]
+            else:
+                video_data = info
+                
+            url = video_data['url']
+            titulo = video_data['title']
         except Exception as e:
             await interaction.followup.send(f"❌ Error al procesar la búsqueda: {e}")
             return
