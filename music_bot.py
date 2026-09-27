@@ -117,15 +117,14 @@ YDL_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
+    'socket_timeout': 10,  # <--- NUEVO: Si YouTube no responde en 10 segundos, corta y lanza error en vez de colgarse
     'cookiefile': COOKIE_PATH,
     'extractor_args': {
         'youtube': {
-            # Se cambia al cliente web puro y mweb para sortear el bloqueo de "The page needs to be reloaded"
             'player_client': ['web', 'mweb', 'default']
         }
     }
 }
-
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn',
