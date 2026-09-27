@@ -49,7 +49,7 @@ if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (YouTube Bypass Cliente Android)
+# 3. LÓGICA DE TU BOT DE MÚSICA (Con Cookies de Render)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -82,7 +82,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones de yt-dlp con el truco del cliente Android para evitar bloqueos en la nube
+# Opciones de yt-dlp con la ruta de las cookies secretas de Render
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
@@ -98,6 +98,7 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'socket_timeout': 15,
+    'cookiefile': '/etc/secrets/cookies.txt',  # <--- Ruta de las cookies en Render
     'extractor_args': {
         'youtube': {
             'player_client': ['android', 'web']
@@ -154,7 +155,6 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
-    # Búsqueda nativa de YouTube optimizada con el bypass
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
         query = f"ytsearch1:{busqueda}"
