@@ -92,7 +92,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones de yt-dlp con formato abierto y universal
+# Opciones de yt-dlp actualizadas con clientes alternativos para evitar el error de formato
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
@@ -111,7 +111,7 @@ YDL_OPTIONS = {
     'cookiefile': COOKIES_PATH,
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'web']
+            'player_client': ['tv_embedded', 'web', 'mweb']
         }
     }
 }
