@@ -1,7 +1,17 @@
 import os
 import threading
 import tempfile
+import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# =========================================================
+# 0. ACTUALIZAR YT-DLP AUTOMÁTICAMENTE EN CADA INICIO (RENDER)
+# =========================================================
+try:
+    print("🔄 Actualizando yt-dlp a la última versión para evitar errores de YouTube...")
+    subprocess.run(["pip", "install", "--upgrade", "yt-dlp"], check=False)
+except Exception as e:
+    print(f"No se pudo actualizar yt-dlp automáticamente: {e}")
 
 # =========================================================
 # 1. SERVIDOR KEEP-ALIVE (Soporte UptimeRobot Gratis)
@@ -47,10 +57,6 @@ load_dotenv()
 # 3. GESTIÓN DE COOKIES DESDE RENDER (ENV)
 # =========================================================
 def get_cookies_file():
-    """
-    Crea un archivo temporal de cookies si existe la variable de entorno COOKIES_TXT,
-    o busca un archivo local 'cookies.txt'. Esto evita fallos en Render.
-    """
     cookies_content = os.getenv("COOKIES_TXT")
     if cookies_content:
         temp_cookies = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8")
@@ -97,7 +103,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Configuración optimizada para evitar bloqueos en Render sin requerir tokens de iOS
+# Configuración actualizada con clientes alternativos y soporte de cookies obligatorias
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -114,7 +120,8 @@ YDL_OPTIONS = {
     'cookiefile': COOKIE_PATH,
     'extractor_args': {
         'youtube': {
-            'player_client': ['web_embedded', 'default']
+            # Se cambia al cliente web puro y mweb para sortear el bloqueo de "The page needs to be reloaded"
+            'player_client': ['web', 'mweb', 'default']
         }
     }
 }
