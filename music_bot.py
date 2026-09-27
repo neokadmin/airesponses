@@ -20,7 +20,7 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        return  # Silencia los logs de pings
+        return
 
 def iniciar_servidor_web():
     puerto = int(os.environ.get("PORT", 10000))
@@ -49,7 +49,7 @@ if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (Descarga Temporal y Borrado)
+# 3. LÓGICA DE TU BOT DE MÚSICA (Invidious / Libre de Bloqueos)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -82,7 +82,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Configuración para descargar el archivo MP3 temporalmente
+# Configuración genérica para descargar audio sin restricciones de bot
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
@@ -112,7 +112,6 @@ def descargar_audio_sync(query):
             info = info['entries'][0]
         
         filename = ydl.prepare_filename(info)
-        # Cambiamos la extensión a .mp3 ya que el postprocessor la convierte
         base, _ = os.path.splitext(filename)
         mp3_filename = base + ".mp3"
         
@@ -128,10 +127,10 @@ async def join(interaction: discord.Interaction):
         await interaction.guild.voice_client.move_to(channel)
     else:
         await channel.connect(cls=voice_recv.VoiceRecvClient)
-    await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
+    await interaction.response.send_message(f"✅ Me he unido à **{channel.name}**")
 
-@bot.tree.command(name="play", description="Descarga temporalmente y reproduce música de YouTube sin bloqueos en vivo.")
-@app_commands.describe(busqueda="Enlace de YouTube o nombre de la canción")
+@bot.tree.command(name="play", description="Descarga y reproduce música usando buscadores libres.")
+@app_commands.describe(busqueda="Nombre de la canción o artista")
 async def play(interaction: discord.Interaction, busqueda: str):
     await interaction.response.defer()
     
@@ -144,22 +143,21 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
+    # Usamos invidious en lugar de YouTube directo para saltarnos el bloqueo de bot en Render
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
-        query = f"ytsearch1:{busqueda}"
+        query = f"ivsearch:{busqueda}"
 
     try:
         loop = asyncio.get_event_loop()
         filepath, titulo = await loop.run_in_executor(None, descargar_audio_sync, query)
     except Exception as e:
-        await interaction.followup.send(f"❌ Error al descargar el archivo: {e}")
+        await interaction.followup.send(f"❌ Error al procesar la búsqueda libre: {e}")
         return
 
-    # Definimos qué pasa cuando la canción termina de reproducirse
     def after_playing(error):
         if error:
             print(f"Error en reproducción: {error}")
-        # Borrar el archivo MP3 temporal al finalizar la canción
         if os.path.exists(filepath):
             try:
                 os.remove(filepath)
