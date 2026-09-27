@@ -90,7 +90,6 @@ YDL_OPTIONS = {
     'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'auto',
     'source_address': '0.0.0.0',
     'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
     'extractor_args': {
@@ -133,16 +132,21 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
+    # CORRECCIÓN DEFINITIVA DE BÚSQUEDA: Inyecta el prefijo ytsearch si no es un enlace directo
+    query = busqueda
+    if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
+        query = f"ytsearch1:{busqueda}"
+
     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
         try:
-            info = ydl.extract_info(busqueda, download=False)
+            info = ydl.extract_info(query, download=False)
             
-            # CORRECCIÓN DE EXTRACCIÓN: Soporta tanto URLs como búsquedas de texto
+            # Si se usó ytsearch1, los datos vendrán encapsulados en un diccionario de búsquedas
             if 'entries' in info:
                 if not info['entries']:
                     await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
                     return
-                video_data = info['entries'][0]
+                video_data = info['entries'][0]  # Tomamos el primer video de la lista de búsquedas
             else:
                 video_data = info
                 
