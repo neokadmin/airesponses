@@ -59,7 +59,7 @@ else:
     print("⚠️ Advertencia: No se encontró el archivo de cookies en /etc/secrets/cookies.txt")
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (Streaming en vivo)
+# 3. LÓGICA DE TU BOT DE MÚSICA (Streaming con Timeout Anticongelamiento)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -92,7 +92,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones de yt-dlp para extracción de metadatos y enlace de streaming en vivo
+# Opciones de yt-dlp optimizadas para streaming rápido
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -101,11 +101,11 @@ YDL_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
-    'socket_timeout': 15,
+    'socket_timeout': 10,
     'cookiefile': COOKIES_PATH,
     'extractor_args': {
         'youtube': {
-            'player_client': ['tv_embedded', 'web', 'mweb']
+            'player_client': ['android', 'web']
         }
     }
 }
@@ -117,7 +117,7 @@ FFMPEG_OPTIONS = {
 
 def obtener_stream_url_sync(query):
     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-        info = ydl.extract_info(query, download=False) # <--- download=False para streaming directo en vivo
+        info = ydl.extract_info(query, download=False)
         if 'entries' in info:
             if not info['entries']:
                 raise Exception("No se encontraron resultados en YouTube.")
@@ -163,7 +163,14 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     try:
         loop = asyncio.get_event_loop()
-        stream_url, titulo = await loop.run_in_executor(None, obtener_stream_url_sync, query)
+        # Envolvemos la extracción en un asyncio.wait_for de 12 segundos para evitar congelamientos eternos
+        stream_url, titulo = await asyncio.wait_for(
+            loop.run_in_executor(None, obtener_stream_url_sync, query), 
+            timeout=12.0
+        )
+    except asyncio.TimeoutError:
+        await interaction.edit_original_response(content="❌ Tiempo de espera agotado: YouTube tardó demasiado en responder y se canceló la conexión.")
+        return
     except Exception as e:
         await interaction.edit_original_response(content=f"❌ Error al obtener el stream de YouTube: {e}")
         return
