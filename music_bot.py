@@ -61,13 +61,11 @@ def load_opus_lib():
         print("⚠️ No se pudo cargar Opus")
 
 
-# ⚠️ CLAVE: 'ignoreerrors': True permite que yt-dlp siga
-# tras encontrar un resultado con DRM y devuelva los demás.
 YDL_OPTIONS_BUSQUEDA = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'nocheckcertificate': True,
-    'ignoreerrors': True,      # ← CRÍTICO: saltar errores de DRM
+    'ignoreerrors': True,   # ← Saltar DRM automáticamente
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
@@ -85,7 +83,6 @@ YDL_OPTIONS_BUSQUEDA = {
     },
 }
 
-# Para extraer un track específico
 YDL_OPTIONS_TRACK = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -152,15 +149,7 @@ def _formatear_duracion(segundos):
 
 
 def buscar_resultados_sync(query: str):
-    """
-    Busca en SoundCloud con IGNOREERRORS=True para que yt-dlp
-    omita los tracks con DRM y devuelva solo los reproducibles.
-    
-    Hace varias búsquedas para maximizar los resultados:
-    - scsearch10:query
-    - scsearch5:query cover
-    - scsearch5:query remix
-    """
+    """Busca en SoundCloud con 3 estrategias para maximizar resultados."""
     todas_queries = [
         f'scsearch15:{query}',
         f'scsearch5:{query} cover',
@@ -184,7 +173,6 @@ def buscar_resultados_sync(query: str):
         
         entries = info.get('entries') or []
         for entry in entries:
-            # Con ignoreerrors=True, yt-dlp puede devolver None por los saltados
             if not entry:
                 continue
             
@@ -192,7 +180,6 @@ def buscar_resultados_sync(query: str):
             if not url or url in urls_vistas:
                 continue
             
-            # Verificar que sea reproducible (que yt-dlp lo haya podido procesar)
             if not entry.get('formats') and not entry.get('url'):
                 continue
             
@@ -210,7 +197,7 @@ def buscar_resultados_sync(query: str):
         if len(resultados) >= 20:
             break
     
-    print(f"✅ {len(resultados)} resultados reproducibles encontrados")
+    print(f"✅ {len(resultados)} resultados reproducibles")
     return resultados
 
 
@@ -249,7 +236,7 @@ class VoiceActivitySink(voice_recv.AudioSink):
 class MusicBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        intents.message_content = True
+        intents.message_content = True  # ← Necesario para leer números en el chat
         intents.voice_states = True
         intents.reactions = True
         super().__init__(command_prefix="!", intents=intents)
@@ -264,14 +251,135 @@ bot = MusicBot()
 
 
 # =========================================================
-# 5. COMANDO /buscar
+# 5. FUNCIÓN AUXILIAR: Espera selección por reacción O por chat
 # =========================================================
-@bot.tree.command(name="buscar", description="Busca y elige con reacciones.")
+async def esperar_seleccion(interaction, mensaje, cantidad_resultados, timeout=60.0):
+    """
+    Espera a que el usuario elija UNA de dos formas:
+    1. Reaccionando con un emoji numérico (1️⃣-🔟) o ❌
+    2. Escribiendo el número (1-10) o 'cancelar' en el chat
+    
+    Devuelve: (indice_seleccionado, forma) donde forma es 'reaccion', 'chat' o 'cancelar'
+    Devuelve (None, 'timeout') si se agota el tiempo.
+    """
+    loop = asyncio.get_event_loop()
+    
+    # Future que se resolverá con la primera respuesta
+    futuro_resultado = loop.create_future()
+    
+    def resolver(indice, forma):
+        if not futuro_resultado.done():
+            futuro_resultado.set_result((indice, forma))
+    
+    # --- Listener de reacciones ---
+    def check_reaccion(reaction, user):
+        return (
+            user.id == interaction.user.id
+            and reaction.message.id == mensaje.id
+            and (
+                str(reaction.emoji) in EMOJIS_NUMEROS[:cantidad_resultados]
+                or str(reaction.emoji) == EMOJI_CANCELAR
+            )
+        )
+    
+    async def escuchar_reacciones():
+        try:
+            reaction, user = await bot.wait_for(
+                'reaction_add',
+                timeout=timeout,
+                check=check_reaccion
+            )
+            emoji = str(reaction.emoji)
+            if emoji == EMOJI_CANCELAR:
+                resolver(-1, 'cancelar')
+            else:
+                idx = EMOJIS_NUMEROS.index(emoji)
+                resolver(idx, 'reaccion')
+        except asyncio.TimeoutError:
+            pass
+        except Exception as e:
+            print(f"⚠️ Error escuchando reacciones: {e}")
+    
+    # --- Listener de mensajes en el chat ---
+    def check_mensaje(message):
+        # Solo mensajes del mismo usuario, en el mismo canal
+        if message.author.id != interaction.user.id:
+            return False
+        if message.channel.id != interaction.channel_id:
+            return False
+        
+        contenido = message.content.strip().lower()
+        
+        # Cancelar
+        if contenido in ('cancelar', 'cancela', 'cancel', 'x', 'no'):
+            return True
+        
+        # Número del 1 al N
+        if contenido.isdigit():
+            num = int(contenido)
+            if 1 <= num <= cantidad_resultados:
+                return True
+        
+        return False
+    
+    async def escuchar_mensajes():
+        try:
+            message = await bot.wait_for(
+                'message',
+                timeout=timeout,
+                check=check_mensaje
+            )
+            contenido = message.content.strip().lower()
+            
+            if contenido in ('cancelar', 'cancela', 'cancel', 'x', 'no'):
+                resolver(-1, 'cancelar')
+            else:
+                idx = int(contenido) - 1  # Usuario escribe 1-10, índice es 0-9
+                resolver(idx, 'chat')
+            
+            # Borrar el mensaje del usuario para mantener limpio el canal
+            try:
+                await message.delete()
+            except Exception:
+                pass
+        except asyncio.TimeoutError:
+            pass
+        except Exception as e:
+            print(f"⚠️ Error escuchando mensajes: {e}")
+    
+    # Lanzar ambos listeners en paralelo
+    tarea_reacciones = asyncio.create_task(escuchar_reacciones())
+    tarea_mensajes = asyncio.create_task(escuchar_mensajes())
+    
+    try:
+        resultado = await asyncio.wait_for(futuro_resultado, timeout=timeout + 1)
+    except asyncio.TimeoutError:
+        resultado = (None, 'timeout')
+    finally:
+        # Cancelar las tareas pendientes
+        for t in (tarea_reacciones, tarea_mensajes):
+            if not t.done():
+                t.cancel()
+        
+        # Esperar a que terminen (con manejo de cancelación)
+        for t in (tarea_reacciones, tarea_mensajes):
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+    
+    return resultado
+
+
+# =========================================================
+# 6. COMANDO /buscar
+# =========================================================
+@bot.tree.command(name="buscar", description="Busca y elige con reacciones o escribiendo el número.")
 @app_commands.describe(query="Nombre de la canción a buscar")
 async def buscar(interaction: discord.Interaction, query: str):
     await interaction.response.send_message(f"🔍 Buscando **{query}**...")
     
-    # PASO 1: Buscar resultados con ignoreerrors=True
+    # Buscar resultados
     try:
         loop = asyncio.get_event_loop()
         resultados = await asyncio.wait_for(
@@ -279,14 +387,10 @@ async def buscar(interaction: discord.Interaction, query: str):
             timeout=60.0
         )
     except asyncio.TimeoutError:
-        await interaction.edit_original_response(
-            content="❌ Timeout buscando. Prueba de nuevo."
-        )
+        await interaction.edit_original_response(content="❌ Timeout buscando.")
         return
     except Exception as e:
-        await interaction.edit_original_response(
-            content=f"❌ Error buscando: {str(e)[:300]}"
-        )
+        await interaction.edit_original_response(content=f"❌ Error: {str(e)[:300]}")
         return
     
     if not resultados:
@@ -294,24 +398,24 @@ async def buscar(interaction: discord.Interaction, query: str):
             content=(
                 f"❌ **No hay resultados reproducibles para:** `{query}`\n\n"
                 f"**Sugerencias:**\n"
-                f"• Añade el nombre del artista: `{query} artista`\n"
-                f"• Prueba con variantes: `{query} cover`, `{query} remix`\n"
-                f"• Usa otro nombre similar\n\n"
-                f"SoundCloud a veces tiene toda la primera página con DRM."
+                f"• `{query} cover`\n"
+                f"• `{query} remix`\n"
+                f"• `{query} instrumental`"
             )
         )
         return
     
-    # Limitar a 10 (emojis)
     resultados = resultados[:10]
     
-    # PASO 2: Mostrar menú INMEDIATAMENTE
+    # Construir embed
     embed = discord.Embed(
         title=f"🎵 Resultados para: {query}",
         description=(
             f"**{len(resultados)} canciones disponibles**\n\n"
-            "Reacciona con el número para reproducir.\n"
-            "Reacciona con ❌ para cancelar."
+            "**Elige de 2 formas:**\n"
+            "• 🎯 **Reacciona** con el emoji numérico (1️⃣-🔟)\n"
+            "• 💬 **Escribe** el número en el chat (ej: `3`)\n\n"
+            "Para cancelar: reacciona con ❌ o escribe `cancelar`"
         ),
         color=discord.Color.green()
     )
@@ -321,81 +425,65 @@ async def buscar(interaction: discord.Interaction, query: str):
         titulo = r['titulo'][:80]
         uploader = r.get('uploader', 'Desconocido')[:40]
         embed.add_field(
-            name=f"{EMOJIS_NUMEROS[i]} {titulo}",
+            name=f"**{i+1}.** {titulo}",
             value=f"⏱️ `{dur}` | 👤 {uploader}",
             inline=False
         )
     
-    embed.set_footer(text="Tienes 60 segundos para elegir")
+    embed.set_footer(text="Tienes 60 segundos para elegir (reacción o chat)")
     
     mensaje = await interaction.edit_original_response(content=None, embed=embed)
     
-    # PASO 3: Añadir reacciones
+    # Añadir reacciones
     try:
         for i in range(len(resultados)):
             await mensaje.add_reaction(EMOJIS_NUMEROS[i])
         await mensaje.add_reaction(EMOJI_CANCELAR)
     except discord.Forbidden:
+        # Si no puede reaccionar, avisa pero permite modo chat
         await interaction.edit_original_response(
             content=(
-                "❌ **El bot no puede reaccionar en este canal.**\n\n"
-                "**Solución:** Dale permiso `Add Reactions` al bot.\n"
-                "**Alternativa:** Usa `/play` que reproduce automáticamente."
+                "⚠️ **El bot no puede reaccionar**, pero aún puedes escribir el número.\n\n"
+                f"**Escribe el número (1-{len(resultados)}) en el chat o `cancelar`.**"
             ),
-            embed=None
+            embed=embed
         )
-        return
     except Exception as e:
-        await interaction.edit_original_response(
-            content=f"❌ Error añadiendo reacciones: {e}",
-            embed=None
-        )
-        return
+        print(f"⚠️ Error añadiendo reacciones: {e}")
     
-    # PASO 4: Esperar reacción
-    def check_reaccion(reaction, user):
-        return (
-            user.id == interaction.user.id
-            and reaction.message.id == mensaje.id
-            and (
-                str(reaction.emoji) in EMOJIS_NUMEROS[:len(resultados)]
-                or str(reaction.emoji) == EMOJI_CANCELAR
-            )
-        )
+    # Esperar selección (reacción o chat)
+    idx, forma = await esperar_seleccion(
+        interaction, mensaje, len(resultados), timeout=60.0
+    )
     
+    # Limpiar reacciones
     try:
-        reaction, user = await bot.wait_for('reaction_add', timeout=60.0, check=check_reaccion)
-    except asyncio.TimeoutError:
-        try:
-            await mensaje.clear_reactions()
-        except Exception:
-            pass
+        await mensaje.clear_reactions()
+    except Exception:
+        pass
+    
+    # Manejar timeout
+    if forma == 'timeout' or idx is None:
         await interaction.edit_original_response(
             content="⏰ Tiempo agotado. Vuelve a usar `/buscar`.",
             embed=None
         )
         return
     
-    emoji_elegido = str(reaction.emoji)
-    
-    try:
-        await mensaje.clear_reactions()
-    except Exception:
-        pass
-    
-    if emoji_elegido == EMOJI_CANCELAR:
+    # Manejar cancelación
+    if forma == 'cancelar' or idx == -1:
         await interaction.edit_original_response(content="❌ Cancelado.", embed=None)
         return
     
-    idx = EMOJIS_NUMEROS.index(emoji_elegido)
     elegido = resultados[idx]
     
+    forma_texto = "reacción" if forma == 'reaccion' else "chat"
     await interaction.edit_original_response(
-        content=f"⏳ Cargando **{elegido['titulo']}**...",
+        content=f"⏳ Cargando **{elegido['titulo']}** (elegido por {forma_texto})...",
         embed=None
     )
     
-    # PASO 5: Conectar al canal
+    # Conectar al canal de voz
     if not interaction.guild.voice_client:
         if interaction.user.voice:
             try:
@@ -409,7 +497,7 @@ async def buscar(interaction: discord.Interaction, query: str):
     
     vc = interaction.guild.voice_client
     
-    # PASO 6: Reproducir (con fallback si DRM)
+    # Fallback: probar el elegido y luego los demás
     orden_prueba = [idx] + [i for i in range(len(resultados)) if i != idx]
     stream_url = None
     titulo_final = None
@@ -426,15 +514,14 @@ async def buscar(interaction: discord.Interaction, query: str):
             reproduciendo_idx = intento_idx
             break
         except Exception as e:
-            print(f"⚠️ Fallo con '{candidato['titulo'][:50]}': {str(e)[:80]}")
+            print(f"⚠️ Fallo '{candidato['titulo'][:50]}': {str(e)[:80]}")
             continue
     
     if not stream_url:
         await interaction.edit_original_response(
             content=(
                 "❌ **Ninguna canción se pudo reproducir.**\n"
-                "Todas tienen DRM o están bloqueadas.\n\n"
-                "**Prueba:** `/buscar <nombre> cover` o `/buscar <nombre> remix`"
+                "Prueba: `/buscar <nombre> cover`"
             )
         )
         return
@@ -453,7 +540,7 @@ async def buscar(interaction: discord.Interaction, query: str):
             await interaction.edit_original_response(
                 content=(
                     f"🎵 Reproduciendo: **{titulo_final}**\n"
-                    f"_(la original tenía DRM, usé otro resultado)_"
+                    f"_(la elegida tenía DRM, usé otra)_"
                 )
             )
         else:
@@ -465,7 +552,7 @@ async def buscar(interaction: discord.Interaction, query: str):
 
 
 # =========================================================
-# 6. COMANDO /play
+# 7. COMANDO /play
 # =========================================================
 @bot.tree.command(name="play", description="Reproduce el primer resultado disponible.")
 @app_commands.describe(query="Nombre de la canción")
@@ -484,11 +571,10 @@ async def play(interaction: discord.Interaction, query: str):
     
     if not resultados:
         await interaction.edit_original_response(
-            content=f"❌ Sin resultados reproducibles. Prueba: `/buscar {query} cover`"
+            content=f"❌ Sin resultados. Prueba: `/buscar {query} cover`"
         )
         return
     
-    # Conectar al canal
     if not interaction.guild.voice_client:
         if interaction.user.voice:
             try:
@@ -535,7 +621,7 @@ async def play(interaction: discord.Interaction, query: str):
 
 
 # =========================================================
-# 7. OTROS COMANDOS
+# 8. OTROS COMANDOS
 # =========================================================
 @bot.tree.command(name="join", description="Une al bot a tu canal de voz.")
 async def join(interaction: discord.Interaction):
@@ -574,7 +660,7 @@ async def leave(interaction: discord.Interaction):
 
 
 # =========================================================
-# 8. EJECUCIÓN
+# 9. EJECUCIÓN
 # =========================================================
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
