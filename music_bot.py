@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # 0. ACTUALIZAR YT-DLP AUTOMÁTICAMENTE EN CADA INICIO (RENDER)
 # =========================================================
 try:
-    print("🔄 Actualizando yt-dlp a la última versión para evitar errores de YouTube...")
+    print("🔄 Actualizando yt-dlp a la última versión...")
     subprocess.run(["pip", "install", "--upgrade", "yt-dlp"], check=False)
 except Exception as e:
     print(f"No se pudo actualizar yt-dlp automáticamente: {e}")
@@ -103,7 +103,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Configuración actualizada con clientes alternativos y soporte de cookies obligatorias
+# Configuración con web_safari para sortear el error de recarga de página
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -117,14 +117,15 @@ YDL_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
-    'socket_timeout': 10,  # <--- NUEVO: Si YouTube no responde en 10 segundos, corta y lanza error en vez de colgarse
+    'socket_timeout': 15,
     'cookiefile': COOKIE_PATH,
     'extractor_args': {
         'youtube': {
-            'player_client': ['web', 'mweb', 'default']
+            'player_client': ['web_safari', 'web_embedded']
         }
     }
 }
+
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn',
