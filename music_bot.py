@@ -78,6 +78,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
+# 🔥 CONFIGURACIÓN MIGRADA AL CLIENTE INNERTUBE DE IOS (MÁXIMA EVASIÓN) 🔥
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -92,14 +93,10 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-    },
     'extractor_args': {
         'youtube': {
-            'client': ['mweb'],
+            # Se cambia 'mweb' por 'ios' para simular peticiones desde la app oficial de iPhone
+            'client': ['ios'],  
             'po_token': [os.environ.get('YT_PO_TOKEN', '')],
             'visitor_data': [os.environ.get('YT_VISITOR_DATA', '')]
         }
@@ -111,7 +108,6 @@ FFMPEG_OPTIONS = {
     'options': '-vn',
 }
 
-# Función auxiliar sincrónica para ser ejecutada en un hilo paralelo seguro
 def extraer_info_sync(query):
     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
         return ydl.extract_info(query, download=False)
@@ -147,7 +143,6 @@ async def play(interaction: discord.Interaction, busqueda: str):
         query = f"ytsearch1:{busqueda}"
 
     try:
-        # CORRECCIÓN DEFINITIVA DE CONGELACIÓN: Ejecuta yt-dlp de forma asíncrona sin bloquear Discord
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(None, extraer_info_sync, query)
         
@@ -155,7 +150,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
             if not info['entries']:
                 await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
                 return
-            video_data = info['entries'][0]
+            video_data = info['entries'][0]  # Extrae de forma segura el primer elemento de la lista
         else:
             video_data = info
             
