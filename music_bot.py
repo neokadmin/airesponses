@@ -92,9 +92,11 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones de yt-dlp usando format_sort ('-S') en lugar de una regla estricta de 'format'
+# Reemplazamos format_sort por un formato universal y tolerante:
+# - 'bestaudio' permite elegir cualquier audio disponible, sin forzar codec/resolución.
+# - Esto evita 'Requested format is not available' cuando YouTube no ofrece ese formato exacto.
 YDL_OPTIONS = {
-    'format_sort': ['quality', 'res:1080', 'acodec:opus'], # <--- Usamos ordenamiento flexible en lugar de restricciones estrictas de formato
+    'format': 'bestaudio/best',
     'noplaylist': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
@@ -122,9 +124,24 @@ def obtener_stream_url_sync(query):
             if not info['entries']:
                 raise Exception("No se encontraron resultados en YouTube.")
             info = info['entries'][0]
-        
+
+        formats = info.get('formats') or []
         stream_url = info.get('url')
         titulo = info.get('title', 'Audio desconocido')
+
+        if formats:
+            compatible = [
+                f for f in formats
+                if f.get('url') and (f.get('vcodec') in (None, 'none') or f.get('acodec'))
+            ]
+            if compatible:
+                # Elegimos el mejor audio disponible sin exigir codec exacto.
+                compatible.sort(key=lambda f: (f.get('tbr') or 0, f.get('abr') or 0), reverse=True)
+                stream_url = compatible[0].get('url')
+
+        if not stream_url:
+            raise Exception('No fue posible determinar una URL de streaming válida para este recurso.')
+
         return stream_url, titulo
 
 @bot.tree.command(name="join", description="Une al bot a tu canal de voz actual.")
