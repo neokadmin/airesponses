@@ -43,7 +43,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (Optimizado para Jamendo - Sin Copyright)
+# 3. LÓGICA DE TU BOT DE MÚSICA
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -76,7 +76,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones limpias para plataformas libres como Jamendo
+# Configuración optimizada con web_safari para evitar bloqueos y errores de URL
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -91,6 +91,11 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'socket_timeout': 15,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['web_safari', 'default']
+        }
+    }
 }
 
 FFMPEG_OPTIONS = {
@@ -114,8 +119,8 @@ async def join(interaction: discord.Interaction):
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
-@bot.tree.command(name="play", description="Reproduce música libre de copyright usando Jamendo.")
-@app_commands.describe(busqueda="Nombre de la canción o estilo musical (ej: electronic, rock, lofi)")
+@bot.tree.command(name="play", description="Reproduce música mediante enlace o búsqueda.")
+@app_commands.describe(busqueda="Enlace de YouTube o nombre de la canción")
 async def play(interaction: discord.Interaction, busqueda: str):
     await interaction.response.defer()
     
@@ -128,10 +133,10 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
-    # Si no pasan un enlace directo, utilizamos el buscador interno de Jamendo (jamendo:)
+    # Búsqueda segura con prefijo ytsearch1:
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
-        query = f"jamendo:{busqueda}"
+        query = f"ytsearch1:{busqueda}"
 
     try:
         loop = asyncio.get_event_loop()
@@ -139,7 +144,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
         
         if 'entries' in info:
             if not info['entries']:
-                await interaction.followup.send("❌ No se encontraron resultados en Jamendo para tu búsqueda.")
+                await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
                 return
             video_data = info['entries'][0]
         else:
@@ -157,7 +162,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
         
         source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
         vc.play(source)
-        await interaction.followup.send(f"🎵 Reproduciendo ahora (Jamendo Libre): **{titulo}**")
+        await interaction.followup.send(f"🎵 Reproduciendo ahora: **{titulo}**")
     except Exception as e:
         await interaction.followup.send(f"❌ Error al reproducir audio: {e}")
 
