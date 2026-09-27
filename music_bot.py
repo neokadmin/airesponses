@@ -78,7 +78,6 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Parámetros optimizados con inyección de User-Agent real de navegador de escritorio
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -93,7 +92,6 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
-    # Cabecera simulada idéntica a un usuario real en Windows Chrome para evitar el bloqueo antibot
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -101,7 +99,7 @@ YDL_OPTIONS = {
     },
     'extractor_args': {
         'youtube': {
-            'client': ['mweb'],  # Mantiene la API móvil para streaming de audio estable
+            'client': ['mweb'],
             'po_token': [os.environ.get('YT_PO_TOKEN', '')],
             'visitor_data': [os.environ.get('YT_VISITOR_DATA', '')]
         }
@@ -112,6 +110,11 @@ FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn',
 }
+
+# Función auxiliar sincrónica para ser ejecutada en un hilo paralelo seguro
+def extraer_info_sync(query):
+    with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+        return ydl.extract_info(query, download=False)
 
 @bot.tree.command(name="join", description="Une al bot a tu canal de voz actual.")
 async def join(interaction: discord.Interaction):
@@ -139,29 +142,28 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
-    # Lógica de búsqueda optimizada para simular navegación regular
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
         query = f"ytsearch1:{busqueda}"
 
-    with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-        try:
-            info = ydl.extract_info(query, download=False)
+    try:
+        # CORRECCIÓN DEFINITIVA DE CONGELACIÓN: Ejecuta yt-dlp de forma asíncrona sin bloquear Discord
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, extraer_info_sync, query)
+        
+        if 'entries' in info:
+            if not info['entries']:
+                await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
+                return
+            video_data = info['entries'][0]
+        else:
+            video_data = info
             
-            # Desenvolvemos correctamente las cajas de texto de ytsearch1
-            if 'entries' in info:
-                if not info['entries']:
-                    await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
-                    return
-                video_data = info['entries'][0]  # Corrección: Extraemos explícitamente el primer índice entero de la lista
-            else:
-                video_data = info
-                
-            url = video_data['url']
-            titulo = video_data['title']
-        except Exception as e:
-            await interaction.followup.send(f"❌ Error al procesar la búsqueda: {e}")
-            return
+        url = video_data['url']
+        titulo = video_data['title']
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error al procesar la búsqueda: {e}")
+        return
 
     try:
         if vc.is_playing():
