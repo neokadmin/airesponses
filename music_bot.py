@@ -1,6 +1,7 @@
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import urllib.parse
 
 # =========================================================
 # 1. SERVIDOR KEEP-ALIVE (Soporte UptimeRobot Gratis)
@@ -105,7 +106,7 @@ def extraer_info_sync(query):
 @bot.tree.command(name="join", description="Une al bot a tu canal de voz actual.")
 async def join(interaction: discord.Interaction):
     if not interaction.user.voice:
-        await interaction.response.send_message("❌ ¡Debes estar en un canal de voz para usar هذا comando!", ephemeral=True)
+        await interaction.response.send_message("❌ ¡Debes estar en un canal de voz para usar este comando!", ephemeral=True)
         return
     channel = interaction.user.voice.channel
     if interaction.guild.voice_client:
@@ -128,10 +129,11 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
-    # Si no pasan un enlace directo, utilizamos la búsqueda interna de Bandcamp (bcsearch1:)
+    # Si no pasan un enlace directo, transformamos la búsqueda en una URL válida de Bandcamp
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
-        query = f"bcsearch1:{busqueda}"
+        encoded_query = urllib.parse.quote(busqueda)
+        query = f"https://bandcamp.com/search?q={encoded_query}"
 
     try:
         loop = asyncio.get_event_loop()
