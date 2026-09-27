@@ -43,7 +43,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA
+# 3. LÓGICA DE TU BOT DE MÚSICA (Optimizado para Bandcamp)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -76,7 +76,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Configuración optimizada con web_safari para evitar bloqueos y errores de URL
+# Configuración limpia para Bandcamp (Sin cookies, sin tokens, sin inicio de sesión)
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -91,11 +91,6 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'socket_timeout': 15,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['web_safari', 'default']
-        }
-    }
 }
 
 FFMPEG_OPTIONS = {
@@ -110,7 +105,7 @@ def extraer_info_sync(query):
 @bot.tree.command(name="join", description="Une al bot a tu canal de voz actual.")
 async def join(interaction: discord.Interaction):
     if not interaction.user.voice:
-        await interaction.response.send_message("❌ ¡Debes estar en un canal de voz para usar este comando!", ephemeral=True)
+        await interaction.response.send_message("❌ ¡Debes estar en un canal de voz para usar هذا comando!", ephemeral=True)
         return
     channel = interaction.user.voice.channel
     if interaction.guild.voice_client:
@@ -119,8 +114,8 @@ async def join(interaction: discord.Interaction):
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
-@bot.tree.command(name="play", description="Reproduce música mediante enlace o búsqueda.")
-@app_commands.describe(busqueda="Enlace de YouTube o nombre de la canción")
+@bot.tree.command(name="play", description="Reproduce música desde Bandcamp por nombre o enlace.")
+@app_commands.describe(busqueda="Enlace de Bandcamp o nombre de la canción/artista")
 async def play(interaction: discord.Interaction, busqueda: str):
     await interaction.response.defer()
     
@@ -133,10 +128,10 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
-    # Búsqueda segura con prefijo ytsearch1:
+    # Si no pasan un enlace directo, utilizamos la búsqueda interna de Bandcamp (bcsearch1:)
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
-        query = f"ytsearch1:{busqueda}"
+        query = f"bcsearch1:{busqueda}"
 
     try:
         loop = asyncio.get_event_loop()
@@ -144,7 +139,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
         
         if 'entries' in info:
             if not info['entries']:
-                await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
+                await interaction.followup.send("❌ No se encontraron resultados en Bandcamp para tu búsqueda.")
                 return
             video_data = info['entries'][0]
         else:
@@ -162,7 +157,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
         
         source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
         vc.play(source)
-        await interaction.followup.send(f"🎵 Reproduciendo ahora: **{titulo}**")
+        await interaction.followup.send(f"🎵 Reproduciendo ahora (Bandcamp): **{titulo}**")
     except Exception as e:
         await interaction.followup.send(f"❌ Error al reproducir audio: {e}")
 
