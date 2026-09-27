@@ -83,7 +83,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Parámetros estables: Enlaza el Secret File 'cookies.txt' e inyecta los PO Tokens de Render
+# Parámetros definitivos: Se implementa bypass de cliente 'mweb' para servidores en la nube
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -101,6 +101,7 @@ YDL_OPTIONS = {
     'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
     'extractor_args': {
         'youtube': {
+            'client': ['mweb'],  # Forzamos la API móvil para saltar el botcheck
             'po_token': [os.environ.get('YT_PO_TOKEN', '')],
             'visitor_data': [os.environ.get('YT_VISITOR_DATA', '')]
         }
