@@ -59,7 +59,7 @@ else:
     print("⚠️ Advertencia: No se encontró el archivo de cookies en /etc/secrets/cookies.txt")
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (Streaming flexible)
+# 3. LÓGICA DE TU BOT DE MÚSICA (Streaming con ordenamiento sort (-S) universal)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -92,9 +92,9 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones de yt-dlp con formato abierto para evitar restricciones de streaming
+# Opciones de yt-dlp usando format_sort ('-S') en lugar de una regla estricta de 'format'
 YDL_OPTIONS = {
-    'format': 'best', # <--- Cambiado a 'best' para aceptar el stream disponible de forma directa
+    'format_sort': ['quality', 'res:1080', 'acodec:opus'], # <--- Usamos ordenamiento flexible en lugar de restricciones estrictas de formato
     'noplaylist': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
