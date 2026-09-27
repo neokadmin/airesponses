@@ -9,7 +9,7 @@ import shutil
 import tempfile
 from dotenv import load_dotenv
 
-# Librerías necesarias para el servidor web keep-alive sin bloquear Discord
+# Librerías del sistema para el servidor keep-alive
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -20,29 +20,28 @@ load_dotenv()
 # =========================================================
 class KeepAliveHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Envía la respuesta HTTP obligatoria para que Render marque la app como "Live"
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Bot de Musica Activo y Respondiendo Peticiones 24/7")
+        self.wfile.write(b"Bot activo 24/7")
 
     def log_message(self, format, *args):
-        return # Silencia los pings repetitivos en la consola
+        return  # Evita llenar la consola de pings
 
 def iniciar_servidor_web():
-    # Render inyecta el puerto correcto en la variable de entorno PORT
-    puerto = int(os.environ.get("PORT", 8080))
+    # Render exige por defecto el puerto 10000 o el que indique su variable PORT
+    puerto = int(os.environ.get("PORT", 10000)) 
     servidor = HTTPServer(("0.0.0.0", puerto), KeepAliveHandler)
-    print(f"📡 Servidor HTTP Keep-Alive iniciado exitosamente en el puerto {puerto}")
+    print(f"📡 Puerto HTTP {puerto} abierto con exito para Render.")
     servidor.serve_forever()
 
-# Iniciamos el servidor HTTP en un hilo paralelo (Daemon)
+# ARRANQUE PREVIO: Se lanza el hilo antes de configurar cualquier objeto de Discord
 hilo_servidor = threading.Thread(target=iniciar_servidor_web, daemon=True)
 hilo_servidor.start()
 
 
 # =========================================================
-# 2. LOGICA ORIGINAL DE TU BOT DE MUSICA
+# 2. LÓGICA DE TU BOT DE MÚSICA
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -124,7 +123,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
         try:
             info = ydl.extract_info(busqueda, download=False)
             if 'entries' in info:
-                info = info['entries'][0]
+                info = info['entries']
             url = info['url']
             titulo = info['title']
         except Exception as e:
@@ -163,6 +162,6 @@ async def leave(interaction: discord.Interaction):
         await interaction.response.send_message("❌ No estoy en ningún canal de voz.", ephemeral=True)
 
 # =========================================================
-# 3. EJECUCIÓN FINAL DEL PROCESO
+# 3. EJECUCIÓN FINAL
 # =========================================================
 bot.run(os.getenv("DISCORD_TOKEN"))
