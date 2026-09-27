@@ -3,29 +3,37 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =========================================================
-# 1. ARRANCAR EL SERVIDOR WEB AL INSTANTE (PRIMERA LÍNEA)
+# 1. ARRANCAR EL SERVIDOR WEB AL INSTANTE (SOPORTE PLAN GRATIS)
 # =========================================================
 class KeepAliveHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        # Responde a pings tipo GET (Navegador)
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Bot activo y respondiendo peticiones")
+        self.wfile.write(b"Bot activo y respondiendo peticiones GET")
+
+    def do_HEAD(self):
+        # Responde a pings tipo HEAD (Plan Gratuito de UptimeRobot)
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
 
     def log_message(self, format, *args):
-        return  # Silencia los logs de pings repetitivos en la consola
+        return  # Silencia los logs de pings repetitivos en la consola de Render
 
 def iniciar_servidor_web():
     puerto = int(os.environ.get("PORT", 10000))
     servidor = HTTPServer(("0.0.0.0", puerto), KeepAliveHandler)
-    print(f"📡 Servidor HTTP Keep-Alive abierto con exito en el puerto {puerto}")
+    print(f"📡 Servidor HTTP Keep-Alive (GET/HEAD) abierto en el puerto {puerto}")
     servidor.serve_forever()
 
+# Forzamos el lanzamiento del hilo en paralelo inmediatamente
 hilo_servidor = threading.Thread(target=iniciar_servidor_web, daemon=True)
 hilo_servidor.start()
 
 # =========================================================
-# 2. IMPORTS DEL PROYECTO
+# 2. IMPORTS DEL PROYECTO DISCORD
 # =========================================================
 import discord
 from discord.ext import commands
@@ -49,7 +57,6 @@ def load_opus_lib():
         except Exception as e:
             print(f"Error cargando opus de forma nativa: {e}")
 
-# CORRECCIÓN AQUÍ: Cambiado voice_recv.VoiceRecvSink por voice_recv.AudioSink
 class VoiceActivitySink(voice_recv.AudioSink):
     def __init__(self):
         super().__init__()
@@ -102,7 +109,6 @@ async def join(interaction: discord.Interaction):
     if interaction.guild.voice_client:
         await interaction.guild.voice_client.move_to(channel)
     else:
-        # Se requiere VoiceRecvClient para habilitar la recepción de voz en canales
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
