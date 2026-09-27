@@ -48,8 +48,18 @@ TEMP_DIR = "temp_audio"
 if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
+# Copiamos las cookies secretas de Render a la carpeta temporal para evitar el error de solo lectura
+COOKIES_PATH = os.path.join(TEMP_DIR, "cookies.txt")
+ORIGINAL_COOKIES = "/etc/secrets/cookies.txt"
+
+if os.path.exists(ORIGINAL_COOKIES):
+    shutil.copy(ORIGINAL_COOKIES, COOKIES_PATH)
+    print("✅ Cookies copiadas correctamente a la zona de escritura temporal.")
+else:
+    print("⚠️ Advertencia: No se encontró el archivo de cookies en /etc/secrets/cookies.txt")
+
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (Con Cookies de Render)
+# 3. LÓGICA DE TU BOT DE MÚSICA
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -82,7 +92,6 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones de yt-dlp con la ruta de las cookies secretas de Render
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
@@ -98,7 +107,7 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'socket_timeout': 15,
-    'cookiefile': '/etc/secrets/cookies.txt',  # <--- Ruta de las cookies en Render
+    'cookiefile': COOKIES_PATH,  # <--- Usamos la copia editable
     'extractor_args': {
         'youtube': {
             'player_client': ['android', 'web']
