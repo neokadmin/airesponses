@@ -226,7 +226,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
         loop = asyncio.get_event_loop()
         stream_url, titulo = await asyncio.wait_for(
             loop.run_in_executor(None, obtener_stream_url_sync, query), 
-            timeout=12.0
+            timeout=120.0
         )
     except asyncio.TimeoutError:
         await interaction.edit_original_response(content="❌ Tiempo de espera agotado: YouTube tardó demasiado en responder y se canceló la conexión.")
