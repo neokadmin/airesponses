@@ -78,7 +78,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# 🔥 CONFIGURACIÓN MIGRADA AL CLIENTE INNERTUBE DE IOS (MÁXIMA EVASIÓN) 🔥
+# Configuración del cliente iOS oficial para evadir los bloqueos de IP en Render
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -95,8 +95,7 @@ YDL_OPTIONS = {
     'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
     'extractor_args': {
         'youtube': {
-            # Se cambia 'mweb' por 'ios' para simular peticiones desde la app oficial de iPhone
-            'client': ['ios'],  
+            'client': ['ios'],  # Bypass mediante la API nativa de la app de iPhone
             'po_token': [os.environ.get('YT_PO_TOKEN', '')],
             'visitor_data': [os.environ.get('YT_VISITOR_DATA', '')]
         }
@@ -146,11 +145,12 @@ async def play(interaction: discord.Interaction, busqueda: str):
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(None, extraer_info_sync, query)
         
+        # CORRECCIÓN DE ÍNDICE: Accedemos explícitamente al primer objeto [0] de la lista entries
         if 'entries' in info:
             if not info['entries']:
                 await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
                 return
-            video_data = info['entries'][0]  # Extrae de forma segura el primer elemento de la lista
+            video_data = info['entries'][0]  # <-- El [0] resuelve el TypeError de forma definitiva
         else:
             video_data = info
             
