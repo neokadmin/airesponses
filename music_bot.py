@@ -3,7 +3,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =========================================================
-# 1. ARRANCAR EL SERVIDOR WEB AL INSTANTE (SOPORTE PLAN GRATIS)
+# 1. SERVIDOR KEEP-ALIVE (Soporte UptimeRobot Gratis)
 # =========================================================
 class KeepAliveHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -14,21 +14,22 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot activo y respondiendo peticiones GET")
 
     def do_HEAD(self):
-        # Responde a pings tipo HEAD (Plan Gratuito de UptimeRobot)
+        # Responde a pings tipo HEAD (Obligatorio para UptimeRobot gratis)
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
 
     def log_message(self, format, *args):
-        return  # Silencia los logs de pings repetitivos en la consola de Render
+        return  # Silencia los logs de pings en la consola de Render
 
 def iniciar_servidor_web():
+    # Render asigna el puerto en la variable PORT. Por defecto usa el 10000.
     puerto = int(os.environ.get("PORT", 10000))
     servidor = HTTPServer(("0.0.0.0", puerto), KeepAliveHandler)
     print(f"📡 Servidor HTTP Keep-Alive (GET/HEAD) abierto en el puerto {puerto}")
     servidor.serve_forever()
 
-# Forzamos el lanzamiento del hilo en paralelo inmediatamente
+# Forzamos el lanzamiento del hilo en paralelo inmediatamente antes de cargar Discord
 hilo_servidor = threading.Thread(target=iniciar_servidor_web, daemon=True)
 hilo_servidor.start()
 
@@ -48,7 +49,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA
+# 3. LÓGICA DE TU BOT DE MÚSICA (Corregida)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -57,12 +58,15 @@ def load_opus_lib():
         except Exception as e:
             print(f"Error cargando opus de forma nativa: {e}")
 
+# CLASE CORREGIDA: Hereda de AudioSink e incluye métodos abstractos obligatorios
 class VoiceActivitySink(voice_recv.AudioSink):
     def __init__(self):
         super().__init__()
-    def want_opus(self):
+    def wants_opus(self):
         return True
     def write(self, user, data):
+        pass
+    def cleanup(self):
         pass
 
 class MusicBot(commands.Bot):
@@ -79,6 +83,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
+# Parámetros estables: Enlaza el Secret File 'cookies.txt' e inyecta los PO Tokens de Render
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -93,6 +98,13 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'default_search': 'auto',
     'source_address': '0.0.0.0',
+    'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+    'extractor_args': {
+        'youtube': {
+            'po_token': [os.environ.get('YT_PO_TOKEN', '')],
+            'visitor_data': [os.environ.get('YT_VISITOR_DATA', '')]
+        }
+    }
 }
 
 FFMPEG_OPTIONS = {
@@ -109,6 +121,7 @@ async def join(interaction: discord.Interaction):
     if interaction.guild.voice_client:
         await interaction.guild.voice_client.move_to(channel)
     else:
+        # Se requiere VoiceRecvClient oficial de la extensión para habilitar audio
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
