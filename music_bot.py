@@ -78,6 +78,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
+# Parámetros optimizados con inyección de User-Agent real de navegador de escritorio
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -92,9 +93,15 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+    # Cabecera simulada idéntica a un usuario real en Windows Chrome para evitar el bloqueo antibot
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    },
     'extractor_args': {
         'youtube': {
-            'client': ['mweb'],  # Bypass móvil para evadir bloqueo antibot en Render
+            'client': ['mweb'],  # Mantiene la API móvil para streaming de audio estable
             'po_token': [os.environ.get('YT_PO_TOKEN', '')],
             'visitor_data': [os.environ.get('YT_VISITOR_DATA', '')]
         }
@@ -132,7 +139,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
-    # CORRECCIÓN DEFINITIVA DE BÚSQUEDA: Inyecta el prefijo ytsearch si no es un enlace directo
+    # Lógica de búsqueda optimizada para simular navegación regular
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
         query = f"ytsearch1:{busqueda}"
@@ -141,12 +148,12 @@ async def play(interaction: discord.Interaction, busqueda: str):
         try:
             info = ydl.extract_info(query, download=False)
             
-            # Si se usó ytsearch1, los datos vendrán encapsulados en un diccionario de búsquedas
+            # Desenvolvemos correctamente las cajas de texto de ytsearch1
             if 'entries' in info:
                 if not info['entries']:
                     await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
                     return
-                video_data = info['entries'][0]  # Tomamos el primer video de la lista de búsquedas
+                video_data = info['entries'][0]  # Corrección: Extraemos explícitamente el primer índice entero de la lista
             else:
                 video_data = info
                 
