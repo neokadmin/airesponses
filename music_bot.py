@@ -32,7 +32,7 @@ hilo_servidor = threading.Thread(target=iniciar_servidor_web, daemon=True)
 hilo_servidor.start()
 
 # =========================================================
-# 2. IMPORTS DEL PROYECTO DISCORD
+# 2. IMPORTS
 # =========================================================
 import discord
 from discord.ext import commands
@@ -40,8 +40,6 @@ from discord.ext import voice_recv
 from discord import app_commands
 import yt_dlp
 import asyncio
-import copy
-from yt_dlp import utils as ytdlp_utils
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -50,23 +48,8 @@ TEMP_DIR = "temp_audio"
 if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
-# Copiamos las cookies secretas de Render a la carpeta temporal
-COOKIES_PATH = os.path.join(TEMP_DIR, "cookies.txt")
-ORIGINAL_COOKIES = "/etc/secrets/cookies.txt"
-
-COOKIES_DISPONIBLES = False
-if os.path.exists(ORIGINAL_COOKIES):
-    try:
-        shutil.copy(ORIGINAL_COOKIES, COOKIES_PATH)
-        COOKIES_DISPONIBLES = True
-        print("✅ Cookies copiadas correctamente a la zona de escritura temporal.")
-    except Exception as e:
-        print(f"⚠️ Error copiando cookies: {e}")
-else:
-    print("⚠️ Advertencia: No se encontró el archivo de cookies en /etc/secrets/cookies.txt")
-
 # =========================================================
-# 3. CONFIGURACIÓN DE YT-DLP (CORREGIDA)
+# 3. CONFIGURACIÓN SOUNDCLOUD
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -80,215 +63,217 @@ def load_opus_lib():
         print("⚠️ No se pudo cargar Opus. La reproducción podría fallar.")
 
 
-def construir_opciones_base(player_client=None):
-    """
-    Construye las opciones base de yt-dlp.
-    Se puede personalizar el player_client para cada variante.
-    """
-    opts = {
-        'noplaylist': True,
-        'nocheckcertificate': True,
-        'ignoreerrors': False,
-        'quiet': True,
-        'no_warnings': True,
-        'source_address': '0.0.0.0',
-        'socket_timeout': 20,
-        'retries': 5,
-        'extractor_retries': 5,
-        'file_access_retries': 5,
-        'fragment_retries': 5,
-        'nocheckcertificate': True,
-        'geo_bypass': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': player_client or ['android'],
-                'skip': ['hls', 'dash'],
-            }
-        },
-    }
-    
-    # Solo añadir cookies si están disponibles
-    if COOKIES_DISPONIBLES:
-        opts['cookiefile'] = COOKIES_PATH
-    
-    return opts
+# Opciones base para SoundCloud
+YDL_OPTIONS_SC = {
+    'format': 'bestaudio/best',
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'quiet': True,
+    'no_warnings': True,
+    'source_address': '0.0.0.0',
+    'socket_timeout': 20,
+    'retries': 5,
+    'extractor_retries': 5,
+    'fragment_retries': 5,
+    'geo_bypass': True,
+    # SoundCloud suele funcionar bien con user-agent de navegador
+    'http_headers': {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/120.0.0.0 Safari/537.36'
+        ),
+        'Accept-Language': 'en-US,en;q=0.9',
+    },
+}
 
 
-# Variantes de fallback (de más específica a más permisiva)
-def generar_variantes():
+def es_error_drm_o_no_disponible(msg: str) -> bool:
     """
-    Genera las variantes de configuración a probar en orden.
-    Cada variante es una tupla (nombre, opciones, formato).
+    Detecta si el error indica DRM, track no disponible o restricción.
+    En esos casos, saltamos al siguiente resultado sin mostrar error al usuario.
     """
-    variantes = []
-    
-    # --- Variante 1: Android con bestaudio (preferida) ---
-    v = construir_opciones_base(['android'])
-    v['format'] = 'bestaudio'
-    variantes.append(("android + bestaudio", v))
-    
-    # --- Variante 2: Android con bestaudio/best ---
-    v = construir_opciones_base(['android'])
-    v['format'] = 'bestaudio/best'
-    variantes.append(("android + bestaudio/best", v))
-    
-    # --- Variante 3: iOS con bestaudio ---
-    v = construir_opciones_base(['ios'])
-    v['format'] = 'bestaudio'
-    variantes.append(("ios + bestaudio", v))
-    
-    # --- Variante 4: Android sin filtro de formato ---
-    v = construir_opciones_base(['android'])
-    v.pop('format', None)
-    variantes.append(("android + sin filtro", v))
-    
-    # --- Variante 5: Web con bestaudio (requiere PO token en algunos casos) ---
-    v = construir_opciones_base(['web'])
-    v['format'] = 'bestaudio/best'
-    variantes.append(("web + bestaudio/best", v))
-    
-    # --- Variante 6: Múltiples clientes con formatos específicos ---
-    v = construir_opciones_base(['android', 'ios', 'web'])
-    v['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
-    variantes.append(("multi-cliente + m4a/webm", v))
-    
-    # --- Variante 7: Última opción, cualquier cosa con audio ---
-    v = construir_opciones_base(['android'])
-    v['format'] = 'worstaudio/worst'
-    variantes.append(("android + worstaudio (último recurso)", v))
-    
-    return variantes
+    msg_lower = msg.lower()
+    palabras_clave = [
+        'drm',
+        'not available',
+        'unavailable',
+        'copyright',
+        'geo',
+        'blocked',
+        'no video formats',
+        'no formats',
+        'requested format is not available',
+        'unable to extract',
+        'private',
+        'removed',
+        'deleted',
+        'not playable',
+        'unsupported',
+        'preview only',
+        'snippet',
+    ]
+    return any(k in msg_lower for k in palabras_clave)
 
 
-def extraer_info_con_fallback(query):
+def extraer_info_sc(query: str, max_intentos: int = 10):
     """
-    Intenta extraer información del video probando múltiples variantes.
-    Devuelve (stream_url, titulo) o lanza excepción con detalles.
+    Busca en SoundCloud y prueba los primeros N resultados en orden.
+    Si un resultado falla por DRM o no disponible, pasa al siguiente.
+    Devuelve (stream_url, titulo) del primer track reproducible.
+    
+    Si 'query' es una URL directa de SoundCloud, se prueba solo esa.
+    Si es texto, se hace búsqueda tipo scsearchN.
     """
+    # Determinar si es URL directa o búsqueda
+    es_url = query.startswith(('http://', 'https://'))
+    
+    if es_url:
+        # URL directa: probar solo esa
+        queries_a_probar = [query]
+    else:
+        # Búsqueda: pedir varios resultados y probar en orden
+        queries_a_probar = [f'scsearch{max_intentos}:{query}']
+    
     errores = []
     
-    for nombre, opts in generar_variantes():
+    for q in queries_a_probar:
         try:
-            print(f"🔄 Probando variante: {nombre}")
-            
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(query, download=False)
-            
-            # Si es una búsqueda, tomar la primera entrada válida
-            if isinstance(info, dict) and 'entries' in info:
-                entries = [e for e in (info.get('entries') or []) if e]
-                if not entries:
-                    errores.append(f"[{nombre}] Sin resultados")
-                    continue
-                info = entries[0]
-            
-            if not info:
-                errores.append(f"[{nombre}] Info vacío")
+            print(f"🔍 Buscando en SoundCloud: {q[:80]}")
+            with yt_dlp.YoutubeDL(YDL_OPTIONS_SC) as ydl:
+                info = ydl.extract_info(q, download=False)
+        except Exception as e:
+            # Error al hacer la búsqueda misma
+            msg = str(e)
+            if es_error_drm_o_no_disponible(msg):
+                errores.append(f"Búsqueda falló: {msg[:100]}")
+                continue
+            errores.append(f"Error de búsqueda: {msg[:100]}")
+            continue
+        
+        if not info:
+            errores.append("Info vacío")
+            continue
+        
+        # Si es una búsqueda con múltiples entries, probar cada una
+        if isinstance(info, dict) and 'entries' in info:
+            entries = [e for e in (info.get('entries') or []) if e]
+            if not entries:
+                errores.append("Sin resultados en SoundCloud")
                 continue
             
-            titulo = info.get('title', 'Audio desconocido')
-            stream_url = None
+            print(f"📋 {len(entries)} resultados encontrados. Probando en orden...")
             
-            # --- Estrategia 1: buscar en formats el mejor audio-only ---
-            formats = info.get('formats') or []
-            if formats:
-                # Filtrar solo-audio con URL válida
-                audio_only = [
-                    f for f in formats
-                    if f.get('url')
-                    and f.get('acodec') and f.get('acodec') != 'none'
-                    and (not f.get('vcodec') or f.get('vcodec') == 'none')
-                ]
-                
-                if audio_only:
-                    # Preferir opus (mejor para Discord)
-                    opus = next(
-                        (f for f in audio_only if f.get('acodec') == 'opus'),
-                        None
-                    )
-                    if opus and opus.get('url'):
-                        stream_url = opus['url']
-                        print(f"   ✅ Opus encontrado")
+            for idx, entry in enumerate(entries):
+                try:
+                    titulo = entry.get('title', f'Track {idx+1}')
+                    url_track = entry.get('webpage_url') or entry.get('url')
+                    
+                    if not url_track:
+                        errores.append(f"[{idx+1}] {titulo}: sin URL")
+                        continue
+                    
+                    print(f"   🎵 [{idx+1}/{len(entries)}] Probando: {titulo}")
+                    
+                    # Extraer info completa del track individual
+                    try:
+                        with yt_dlp.YoutubeDL(YDL_OPTIONS_SC) as ydl2:
+                            info_track = ydl2.extract_info(url_track, download=False)
+                    except Exception as e:
+                        msg = str(e)
+                        if es_error_drm_o_no_disponible(msg):
+                            print(f"   ⚠️ DRM/No disponible: {titulo}")
+                            errores.append(f"[{idx+1}] {titulo}: DRM/No disponible")
+                        else:
+                            print(f"   ⚠️ Error: {msg[:80]}")
+                            errores.append(f"[{idx+1}] {titulo}: {msg[:80]}")
+                        continue  # ← Pasar al siguiente resultado
+                    
+                    if not info_track:
+                        errores.append(f"[{idx+1}] {titulo}: info vacío")
+                        continue
+                    
+                    stream_url = _obtener_mejor_url(info_track)
+                    
+                    if stream_url:
+                        titulo_final = info_track.get('title', titulo)
+                        print(f"   ✅ Reproducible: {titulo_final}")
+                        return stream_url, titulo_final
                     else:
-                        # Si no hay opus, elegir mayor bitrate
-                        best = max(
-                            audio_only,
-                            key=lambda f: (f.get('abr') or f.get('tbr') or 0)
-                        )
-                        if best.get('url'):
-                            stream_url = best['url']
-                            print(f"   ✅ {best.get('acodec')} @ {best.get('abr')}kbps")
-                
-                # Si aún no hay, buscar cualquier formato con audio
-                if not stream_url:
-                    con_audio = [
-                        f for f in formats
-                        if f.get('url') and f.get('acodec') and f.get('acodec') != 'none'
-                    ]
-                    if con_audio:
-                        best = max(
-                            con_audio,
-                            key=lambda f: (f.get('abr') or f.get('tbr') or 0)
-                        )
-                        if best.get('url'):
-                            stream_url = best['url']
-                            print(f"   ✅ Formato con video (fallback)")
-            
-            # --- Estrategia 2: URL raíz ---
-            if not stream_url and info.get('url'):
-                stream_url = info['url']
-                print(f"   ✅ URL raíz del info")
-            
+                        errores.append(f"[{idx+1}] {titulo}: sin URL de audio")
+                        continue
+                        
+                except Exception as e:
+                    errores.append(f"[{idx+1}] Error: {str(e)[:80]}")
+                    continue
+        
+        # Si info es un track único (URL directa)
+        else:
+            titulo = info.get('title', 'Audio desconocido')
+            stream_url = _obtener_mejor_url(info)
             if stream_url:
                 return stream_url, titulo
             else:
-                errores.append(f"[{nombre}] No se encontró URL de streaming")
-                
-        except ytdlp_utils.DownloadError as e:
-            msg = str(e)
-            errores.append(f"[{nombre}] DownloadError: {msg[:120]}")
-            print(f"   ❌ {msg[:100]}")
-            continue
-        except Exception as e:
-            msg = str(e)
-            errores.append(f"[{nombre}] {type(e).__name__}: {msg[:120]}")
-            print(f"   ❌ {type(e).__name__}: {msg[:100]}")
-            continue
+                errores.append(f"{titulo}: sin URL de audio")
     
-    # Si todas fallaron
-    detalle = "\n".join(f"  - {e}" for e in errores)
+    # Si llegamos aquí, ningún resultado funcionó
+    detalle = "\n".join(f"  - {e}" for e in errores[-8:])  # últimos 8
     raise Exception(
-        f"❌ No se pudo obtener el stream tras {len(errores)} intentos.\n"
-        f"Detalles:\n{detalle}\n\n"
-        f"💡 Soluciones:\n"
-        f"  1. Actualiza yt-dlp: pip install --upgrade yt-dlp\n"
-        f"  2. Verifica que las cookies no estén caducadas\n"
-        f"  3. Prueba con otro video para descartar bloqueo del mismo"
+        f"❌ No se encontró ningún track reproducible en SoundCloud.\n"
+        f"Se intentaron varios resultados sin éxito.\n"
+        f"Detalles:\n{detalle}"
     )
+
+
+def _obtener_mejor_url(info: dict):
+    """
+    Extrae la mejor URL de audio del info de yt-dlp.
+    Prioriza opus (mejor para Discord), luego mayor bitrate.
+    """
+    formats = info.get('formats') or []
+    
+    if formats:
+        # Filtrar formatos con URL y códec de audio
+        audio_formats = [
+            f for f in formats
+            if f.get('url') and f.get('acodec') and f.get('acodec') != 'none'
+        ]
+        
+        if audio_formats:
+            # Preferir opus
+            opus = next(
+                (f for f in audio_formats if f.get('acodec') == 'opus'),
+                None
+            )
+            if opus and opus.get('url'):
+                return opus['url']
+            
+            # Si no hay opus, el de mayor bitrate
+            best = max(
+                audio_formats,
+                key=lambda f: (f.get('abr') or f.get('tbr') or 0)
+            )
+            if best.get('url'):
+                return best['url']
+    
+    # Fallback: URL raíz
+    return info.get('url')
 
 
 def obtener_stream_url_sync(query):
     """Wrapper sincrónico para ejecutar en executor."""
-    return extraer_info_con_fallback(query)
+    return extraer_info_sc(query)
 
 
-def debug_formats(video_id):
-    """
-    Función de diagnóstico: lista todos los formatos disponibles.
-    Ejecutar manualmente para debug.
-    """
-    print(f"\n🔍 Diagnóstico para video: {video_id}\n")
+def debug_sc(query):
+    """Diagnóstico: lista formatos de un track de SoundCloud."""
+    print(f"\n🔍 Diagnóstico SoundCloud: {query}\n")
     try:
-        opts = construir_opciones_base(['android'])
-        opts['listformats'] = True
-        opts['quiet'] = False
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(
-                f'https://www.youtube.com/watch?v={video_id}',
-                download=False
-            )
+        with yt_dlp.YoutubeDL({**YDL_OPTIONS_SC, 'listformats': True, 'quiet': False}) as ydl:
+            ydl.extract_info(query, download=False)
     except Exception as e:
-        print(f"❌ Error en diagnóstico: {e}")
+        print(f"❌ Error: {e}")
 
 
 # =========================================================
@@ -315,7 +300,7 @@ class MusicBot(commands.Bot):
     async def setup_hook(self):
         load_opus_lib()
         await self.tree.sync()
-        print("✅ Bot iniciado y comandos de barra sincronizados.")
+        print("✅ Bot iniciado y comandos sincronizados.")
 
 
 bot = MusicBot()
@@ -335,7 +320,7 @@ FFMPEG_OPTIONS = {
 # =========================================================
 # 5. COMANDOS
 # =========================================================
-@bot.tree.command(name="join", description="Une al bot a tu canal de voz actual.")
+@bot.tree.command(name="join", description="Une al bot a tu canal de voz.")
 async def join(interaction: discord.Interaction):
     if not interaction.user.voice:
         await interaction.response.send_message(
@@ -350,14 +335,14 @@ async def join(interaction: discord.Interaction):
     else:
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     
-    await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
+    await interaction.response.send_message(f"✅ Me uní a **{channel.name}**")
 
 
-@bot.tree.command(name="play", description="Reproduce música de YouTube.")
-@app_commands.describe(busqueda="Nombre de la canción o enlace de YouTube")
+@bot.tree.command(name="play", description="Reproduce música desde SoundCloud.")
+@app_commands.describe(busqueda="Nombre de la canción o enlace de SoundCloud")
 async def play(interaction: discord.Interaction, busqueda: str):
     await interaction.response.send_message(
-        f"⏳ Buscando: **{busqueda}**...",
+        f"⏳ Buscando en SoundCloud: **{busqueda}**...",
         ephemeral=False
     )
     
@@ -379,26 +364,20 @@ async def play(interaction: discord.Interaction, busqueda: str):
     
     vc = interaction.guild.voice_client
     
-    # Construir query
-    query = busqueda
-    if not busqueda.startswith(("http://", "https://")):
-        query = f"ytsearch1:{busqueda}"
-    
-    # Extraer URL del stream
+    # Extraer URL del stream con fallback automático
     try:
         loop = asyncio.get_event_loop()
         stream_url, titulo = await asyncio.wait_for(
-            loop.run_in_executor(None, obtener_stream_url_sync, query),
-            timeout=120.0
+            loop.run_in_executor(None, obtener_stream_url_sync, busqueda),
+            timeout=150.0
         )
     except asyncio.TimeoutError:
         await interaction.edit_original_response(
-            content="❌ Tiempo de espera agotado (YouTube tardó demasiado)."
+            content="❌ Tiempo de espera agotado buscando en SoundCloud."
         )
         return
     except Exception as e:
         error_msg = str(e)
-        # Limitar longitud para Discord (2000 caracteres)
         if len(error_msg) > 1800:
             error_msg = error_msg[:1800] + "..."
         await interaction.edit_original_response(
@@ -437,14 +416,9 @@ async def background(interaction: discord.Interaction):
         return
     try:
         vc.listen(VoiceActivitySink())
-        await interaction.response.send_message(
-            "🎙️ Modo escucha activado."
-        )
+        await interaction.response.send_message("🎙️ Modo escucha activado.")
     except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Error: {e}",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
 
 @bot.tree.command(name="leave", description="Desconecta al bot del canal.")
@@ -460,15 +434,15 @@ async def leave(interaction: discord.Interaction):
         )
 
 
-@bot.tree.command(name="debug", description="Diagnostica un video de YouTube.")
-@app_commands.describe(video_id="ID del video (ej: joaZxKoA7_M)")
-async def debug(interaction: discord.Interaction, video_id: str):
+@bot.tree.command(name="debug", description="Diagnostica un track de SoundCloud.")
+@app_commands.describe(url="URL del track de SoundCloud")
+async def debug(interaction: discord.Interaction, url: str):
     await interaction.response.defer(ephemeral=True)
     try:
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, debug_formats, video_id)
+        await loop.run_in_executor(None, debug_sc, url)
         await interaction.followup.send(
-            "✅ Diagnóstico completado. Revisa los logs del bot.",
+            "✅ Diagnóstico completado. Revisa los logs.",
             ephemeral=True
         )
     except Exception as e:
