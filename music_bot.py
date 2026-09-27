@@ -3,7 +3,7 @@ import shutil
 import threading
 
 # =========================================================
-# 1. SERVIDOR KEEP-ALIVE (Soporte UptimeRobot Gratis)
+# 1. SERVIDOR KEEP-ALIVE
 # =========================================================
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -12,7 +12,7 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Bot activo y respondiendo peticiones GET")
+        self.wfile.write(b"Bot activo")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -25,11 +25,10 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
 def iniciar_servidor_web():
     puerto = int(os.environ.get("PORT", 10000))
     servidor = HTTPServer(("0.0.0.0", puerto), KeepAliveHandler)
-    print(f"📡 Servidor HTTP Keep-Alive abierto en el puerto {puerto}")
+    print(f"📡 Servidor Keep-Alive en puerto {puerto}")
     servidor.serve_forever()
 
-hilo_servidor = threading.Thread(target=iniciar_servidor_web, daemon=True)
-hilo_servidor.start()
+threading.Thread(target=iniciar_servidor_web, daemon=True).start()
 
 # =========================================================
 # 2. IMPORTS
@@ -45,25 +44,22 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TEMP_DIR = "temp_audio"
-if not os.path.exists(TEMP_DIR):
-    os.makedirs(TEMP_DIR)
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 # =========================================================
-# 3. CONFIGURACIÓN SOUNDCLOUD
+# 3. CONFIGURACIÓN YT-DLP (SoundCloud)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
         for lib in ['libopus.so.0', 'libopus.so', 'opus']:
             try:
                 discord.opus.load_opus(lib)
-                print(f"✅ Librería Opus cargada: {lib}")
+                print(f"✅ Opus cargado: {lib}")
                 return
             except Exception:
                 continue
-        print("⚠️ No se pudo cargar Opus. La reproducción podría fallar.")
+        print("⚠️ No se pudo cargar Opus")
 
-
-# Opciones base para SoundCloud
 YDL_OPTIONS_SC = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -77,7 +73,6 @@ YDL_OPTIONS_SC = {
     'extractor_retries': 5,
     'fragment_retries': 5,
     'geo_bypass': True,
-    # SoundCloud suele funcionar bien con user-agent de navegador
     'http_headers': {
         'User-Agent': (
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -88,196 +83,116 @@ YDL_OPTIONS_SC = {
     },
 }
 
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
+    'options': '-vn -b:a 192k',
+}
 
-def es_error_drm_o_no_disponible(msg: str) -> bool:
-    """
-    Detecta si el error indica DRM, track no disponible o restricción.
-    En esos casos, saltamos al siguiente resultado sin mostrar error al usuario.
-    """
+# Emojis numéricos para la votación (1-10)
+EMOJIS_NUMEROS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
+EMOJI_CANCELAR = '❌'
+
+
+def es_error_drm(msg: str) -> bool:
+    """Detecta errores de DRM o no disponible."""
     msg_lower = msg.lower()
-    palabras_clave = [
-        'drm',
-        'not available',
-        'unavailable',
-        'copyright',
-        'geo',
-        'blocked',
-        'no video formats',
-        'no formats',
-        'requested format is not available',
-        'unable to extract',
-        'private',
-        'removed',
-        'deleted',
-        'not playable',
-        'unsupported',
-        'preview only',
-        'snippet',
-    ]
-    return any(k in msg_lower for k in palabras_clave)
-
-
-def extraer_info_sc(query: str, max_intentos: int = 10):
-    """
-    Busca en SoundCloud y prueba los primeros N resultados en orden.
-    Si un resultado falla por DRM o no disponible, pasa al siguiente.
-    Devuelve (stream_url, titulo) del primer track reproducible.
-    
-    Si 'query' es una URL directa de SoundCloud, se prueba solo esa.
-    Si es texto, se hace búsqueda tipo scsearchN.
-    """
-    # Determinar si es URL directa o búsqueda
-    es_url = query.startswith(('http://', 'https://'))
-    
-    if es_url:
-        # URL directa: probar solo esa
-        queries_a_probar = [query]
-    else:
-        # Búsqueda: pedir varios resultados y probar en orden
-        queries_a_probar = [f'scsearch{max_intentos}:{query}']
-    
-    errores = []
-    
-    for q in queries_a_probar:
-        try:
-            print(f"🔍 Buscando en SoundCloud: {q[:80]}")
-            with yt_dlp.YoutubeDL(YDL_OPTIONS_SC) as ydl:
-                info = ydl.extract_info(q, download=False)
-        except Exception as e:
-            # Error al hacer la búsqueda misma
-            msg = str(e)
-            if es_error_drm_o_no_disponible(msg):
-                errores.append(f"Búsqueda falló: {msg[:100]}")
-                continue
-            errores.append(f"Error de búsqueda: {msg[:100]}")
-            continue
-        
-        if not info:
-            errores.append("Info vacío")
-            continue
-        
-        # Si es una búsqueda con múltiples entries, probar cada una
-        if isinstance(info, dict) and 'entries' in info:
-            entries = [e for e in (info.get('entries') or []) if e]
-            if not entries:
-                errores.append("Sin resultados en SoundCloud")
-                continue
-            
-            print(f"📋 {len(entries)} resultados encontrados. Probando en orden...")
-            
-            for idx, entry in enumerate(entries):
-                try:
-                    titulo = entry.get('title', f'Track {idx+1}')
-                    url_track = entry.get('webpage_url') or entry.get('url')
-                    
-                    if not url_track:
-                        errores.append(f"[{idx+1}] {titulo}: sin URL")
-                        continue
-                    
-                    print(f"   🎵 [{idx+1}/{len(entries)}] Probando: {titulo}")
-                    
-                    # Extraer info completa del track individual
-                    try:
-                        with yt_dlp.YoutubeDL(YDL_OPTIONS_SC) as ydl2:
-                            info_track = ydl2.extract_info(url_track, download=False)
-                    except Exception as e:
-                        msg = str(e)
-                        if es_error_drm_o_no_disponible(msg):
-                            print(f"   ⚠️ DRM/No disponible: {titulo}")
-                            errores.append(f"[{idx+1}] {titulo}: DRM/No disponible")
-                        else:
-                            print(f"   ⚠️ Error: {msg[:80]}")
-                            errores.append(f"[{idx+1}] {titulo}: {msg[:80]}")
-                        continue  # ← Pasar al siguiente resultado
-                    
-                    if not info_track:
-                        errores.append(f"[{idx+1}] {titulo}: info vacío")
-                        continue
-                    
-                    stream_url = _obtener_mejor_url(info_track)
-                    
-                    if stream_url:
-                        titulo_final = info_track.get('title', titulo)
-                        print(f"   ✅ Reproducible: {titulo_final}")
-                        return stream_url, titulo_final
-                    else:
-                        errores.append(f"[{idx+1}] {titulo}: sin URL de audio")
-                        continue
-                        
-                except Exception as e:
-                    errores.append(f"[{idx+1}] Error: {str(e)[:80]}")
-                    continue
-        
-        # Si info es un track único (URL directa)
-        else:
-            titulo = info.get('title', 'Audio desconocido')
-            stream_url = _obtener_mejor_url(info)
-            if stream_url:
-                return stream_url, titulo
-            else:
-                errores.append(f"{titulo}: sin URL de audio")
-    
-    # Si llegamos aquí, ningún resultado funcionó
-    detalle = "\n".join(f"  - {e}" for e in errores[-8:])  # últimos 8
-    raise Exception(
-        f"❌ No se encontró ningún track reproducible en SoundCloud.\n"
-        f"Se intentaron varios resultados sin éxito.\n"
-        f"Detalles:\n{detalle}"
-    )
+    return any(k in msg_lower for k in [
+        'drm', 'not available', 'unavailable', 'copyright',
+        'geo', 'blocked', 'private', 'removed', 'deleted',
+        'not playable', 'preview only', 'snippet'
+    ])
 
 
 def _obtener_mejor_url(info: dict):
-    """
-    Extrae la mejor URL de audio del info de yt-dlp.
-    Prioriza opus (mejor para Discord), luego mayor bitrate.
-    """
+    """Extrae la mejor URL de audio del info."""
     formats = info.get('formats') or []
-    
     if formats:
-        # Filtrar formatos con URL y códec de audio
         audio_formats = [
             f for f in formats
             if f.get('url') and f.get('acodec') and f.get('acodec') != 'none'
         ]
-        
         if audio_formats:
-            # Preferir opus
-            opus = next(
-                (f for f in audio_formats if f.get('acodec') == 'opus'),
-                None
-            )
+            opus = next((f for f in audio_formats if f.get('acodec') == 'opus'), None)
             if opus and opus.get('url'):
                 return opus['url']
-            
-            # Si no hay opus, el de mayor bitrate
-            best = max(
-                audio_formats,
-                key=lambda f: (f.get('abr') or f.get('tbr') or 0)
-            )
+            best = max(audio_formats, key=lambda f: (f.get('abr') or f.get('tbr') or 0))
             if best.get('url'):
                 return best['url']
-    
-    # Fallback: URL raíz
     return info.get('url')
 
 
-def obtener_stream_url_sync(query):
-    """Wrapper sincrónico para ejecutar en executor."""
-    return extraer_info_sc(query)
-
-
-def debug_sc(query):
-    """Diagnóstico: lista formatos de un track de SoundCloud."""
-    print(f"\n🔍 Diagnóstico SoundCloud: {query}\n")
+def buscar_resultados_sync(query: str, cantidad: int = 10):
+    """
+    Busca en SoundCloud y devuelve una lista de resultados SIN descargar aún.
+    Cada resultado es un dict con: título, url, duración, uploader, thumbnail.
+    """
+    search_query = f'scsearch{cantidad}:{query}'
+    print(f"🔍 Buscando: {search_query}")
+    
     try:
-        with yt_dlp.YoutubeDL({**YDL_OPTIONS_SC, 'listformats': True, 'quiet': False}) as ydl:
-            ydl.extract_info(query, download=False)
+        with yt_dlp.YoutubeDL(YDL_OPTIONS_SC) as ydl:
+            info = ydl.extract_info(search_query, download=False)
     except Exception as e:
-        print(f"❌ Error: {e}")
+        raise Exception(f"Error en búsqueda: {e}")
+    
+    if not info or 'entries' not in info:
+        raise Exception("No se encontraron resultados en SoundCloud")
+    
+    entries = [e for e in (info.get('entries') or []) if e]
+    if not entries:
+        raise Exception("Búsqueda vacía")
+    
+    resultados = []
+    for entry in entries:
+        if not entry:
+            continue
+        resultados.append({
+            'titulo': entry.get('title', 'Sin título'),
+            'url': entry.get('webpage_url') or entry.get('url'),
+            'duracion': entry.get('duration'),
+            'uploader': entry.get('uploader', 'Desconocido'),
+            'thumbnail': entry.get('thumbnail'),
+            'id': entry.get('id'),
+        })
+    
+    print(f"✅ {len(resultados)} resultados encontrados")
+    return resultados
+
+
+def extraer_stream_de_url_sync(url: str):
+    """
+    Dado un URL específico de SoundCloud, extrae la URL de streaming.
+    Devuelve (stream_url, titulo) o lanza excepción.
+    """
+    print(f"🎵 Extrayendo stream: {url}")
+    try:
+        with yt_dlp.YoutubeDL(YDL_OPTIONS_SC) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        raise Exception(f"Error extrayendo: {e}")
+    
+    if not info:
+        raise Exception("Info vacío")
+    
+    titulo = info.get('title', 'Desconocido')
+    stream_url = _obtener_mejor_url(info)
+    
+    if not stream_url:
+        raise Exception("No se encontró URL de audio")
+    
+    return stream_url, titulo
+
+
+def formatear_duracion(segundos):
+    """Convierte segundos a formato M:SS"""
+    if not segundos:
+        return "??:??"
+    segundos = int(segundos)
+    return f"{segundos // 60}:{segundos % 60:02d}"
 
 
 # =========================================================
-# 4. BOT DE DISCORD
+# 4. BOT
 # =========================================================
 class VoiceActivitySink(voice_recv.AudioSink):
     def __init__(self):
@@ -295,26 +210,16 @@ class MusicBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.voice_states = True
+        intents.reactions = True  # ← Necesario para reacciones
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
         load_opus_lib()
         await self.tree.sync()
-        print("✅ Bot iniciado y comandos sincronizados.")
+        print("✅ Bot iniciado")
 
 
 bot = MusicBot()
-
-
-FFMPEG_OPTIONS = {
-    'before_options': (
-        '-reconnect 1 '
-        '-reconnect_streamed 1 '
-        '-reconnect_delay_max 5 '
-        '-nostdin'
-    ),
-    'options': '-vn -b:a 192k',
-}
 
 
 # =========================================================
@@ -323,66 +228,151 @@ FFMPEG_OPTIONS = {
 @bot.tree.command(name="join", description="Une al bot a tu canal de voz.")
 async def join(interaction: discord.Interaction):
     if not interaction.user.voice:
-        await interaction.response.send_message(
-            "❌ ¡Debes estar en un canal de voz!",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ ¡Debes estar en un canal de voz!", ephemeral=True)
         return
-    
     channel = interaction.user.voice.channel
     if interaction.guild.voice_client:
         await interaction.guild.voice_client.move_to(channel)
     else:
         await channel.connect(cls=voice_recv.VoiceRecvClient)
-    
     await interaction.response.send_message(f"✅ Me uní a **{channel.name}**")
 
 
-@bot.tree.command(name="play", description="Reproduce música desde SoundCloud.")
-@app_commands.describe(busqueda="Nombre de la canción o enlace de SoundCloud")
-async def play(interaction: discord.Interaction, busqueda: str):
-    await interaction.response.send_message(
-        f"⏳ Buscando en SoundCloud: **{busqueda}**...",
-        ephemeral=False
+@bot.tree.command(name="buscar", description="Busca canciones y elige con reacciones.")
+@app_commands.describe(query="Nombre de la canción a buscar")
+async def buscar(interaction: discord.Interaction, query: str):
+    await interaction.response.send_message(f"🔍 Buscando **{query}** en SoundCloud...")
+    
+    # Buscar resultados
+    try:
+        loop = asyncio.get_event_loop()
+        resultados = await asyncio.wait_for(
+            loop.run_in_executor(None, buscar_resultados_sync, query, 10),
+            timeout=60.0
+        )
+    except asyncio.TimeoutError:
+        await interaction.edit_original_response(content="❌ Tiempo de espera agotado.")
+        return
+    except Exception as e:
+        await interaction.edit_original_response(content=f"❌ Error: {e}")
+        return
+    
+    if not resultados:
+        await interaction.edit_original_response(content="❌ No se encontraron resultados.")
+        return
+    
+    # Limitar a 10 (por los emojis)
+    resultados = resultados[:10]
+    
+    # Construir embed con la lista
+    embed = discord.Embed(
+        title=f"🎵 Resultados para: {query}",
+        description="Reacciona con el número para reproducir esa canción.\nReacciona con ❌ para cancelar.",
+        color=discord.Color.blurple()
     )
     
-    # Conectar al canal si no lo está
+    for i, r in enumerate(resultados):
+        dur = formatear_duracion(r.get('duracion'))
+        titulo = r['titulo'][:80]
+        uploader = r.get('uploader', 'Desconocido')[:40]
+        embed.add_field(
+            name=f"{EMOJIS_NUMEROS[i]} {titulo}",
+            value=f"⏱️ `{dur}` | 👤 {uploader}",
+            inline=False
+        )
+    
+    embed.set_footer(text="Tienes 60 segundos para elegir")
+    
+    mensaje = await interaction.edit_original_response(content=None, embed=embed)
+    
+    # Añadir reacciones
+    for i in range(len(resultados)):
+        await mensaje.add_reaction(EMOJIS_NUMEROS[i])
+    await mensaje.add_reaction(EMOJI_CANCELAR)
+    
+    # Esperar reacción del usuario
+    def check_reaccion(reaction, user):
+        return (
+            user == interaction.user
+            and reaction.message.id == mensaje.id
+            and (
+                str(reaction.emoji) in EMOJIS_NUMEROS[:len(resultados)]
+                or str(reaction.emoji) == EMOJI_CANCELAR
+            )
+        )
+    
+    try:
+        reaction, user = await bot.wait_for('reaction_add', timeout=60.0, check=check_reaccion)
+    except asyncio.TimeoutError:
+        try:
+            await mensaje.clear_reactions()
+        except Exception:
+            pass
+        await interaction.edit_original_response(
+            content="⏰ Tiempo agotado. Vuelve a usar `/buscar`.",
+            embed=None
+        )
+        return
+    
+    emoji_elegido = str(reaction.emoji)
+    
+    # Limpiar reacciones
+    try:
+        await mensaje.clear_reactions()
+    except Exception:
+        pass
+    
+    # Si canceló
+    if emoji_elegido == EMOJI_CANCELAR:
+        await interaction.edit_original_response(content="❌ Búsqueda cancelada.", embed=None)
+        return
+    
+    # Identificar índice elegido
+    idx = EMOJIS_NUMEROS.index(emoji_elegido)
+    elegido = resultados[idx]
+    
+    # Confirmar selección
+    await interaction.edit_original_response(
+        content=f"⏳ Cargando: **{elegido['titulo']}**...",
+        embed=None
+    )
+    
+    # Conectar al canal de voz si es necesario
     if not interaction.guild.voice_client:
         if interaction.user.voice:
             try:
                 await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
             except Exception as e:
-                await interaction.edit_original_response(
-                    content=f"❌ No pude conectarme al canal: {e}"
-                )
+                await interaction.edit_original_response(content=f"❌ No pude conectarme: {e}")
                 return
         else:
-            await interaction.edit_original_response(
-                content="❌ ¡Debes estar en un canal de voz!"
-            )
+            await interaction.edit_original_response(content="❌ ¡Debes estar en un canal de voz!")
             return
     
     vc = interaction.guild.voice_client
     
-    # Extraer URL del stream con fallback automático
+    # Extraer stream de la URL elegida
     try:
         loop = asyncio.get_event_loop()
-        stream_url, titulo = await asyncio.wait_for(
-            loop.run_in_executor(None, obtener_stream_url_sync, busqueda),
-            timeout=150.0
+        stream_url, titulo_final = await asyncio.wait_for(
+            loop.run_in_executor(None, extraer_stream_de_url_sync, elegido['url']),
+            timeout=60.0
         )
     except asyncio.TimeoutError:
-        await interaction.edit_original_response(
-            content="❌ Tiempo de espera agotado buscando en SoundCloud."
-        )
+        await interaction.edit_original_response(content="❌ Timeout extrayendo el stream.")
         return
     except Exception as e:
-        error_msg = str(e)
-        if len(error_msg) > 1800:
-            error_msg = error_msg[:1800] + "..."
-        await interaction.edit_original_response(
-            content=f"```\n{error_msg}\n```"
-        )
+        # Si esa canción específica falla (DRM, etc.), avisar y sugerir buscar otra
+        msg = str(e)
+        if es_error_drm(msg):
+            await interaction.edit_original_response(
+                content=(
+                    f"⚠️ Esta canción está protegida (DRM) y no se puede reproducir.\n"
+                    f"Usa `/buscar` de nuevo para intentar con otro resultado."
+                )
+            )
+        else:
+            await interaction.edit_original_response(content=f"❌ Error: {msg[:500]}")
         return
     
     # Reproducir
@@ -397,22 +387,78 @@ async def play(interaction: discord.Interaction, busqueda: str):
         source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
         vc.play(source, after=after_playing)
         await interaction.edit_original_response(
-            content=f"🎵 Reproduciendo: **{titulo}**"
+            content=f"🎵 Reproduciendo: **{titulo_final}**"
         )
     except Exception as e:
-        await interaction.edit_original_response(
-            content=f"❌ Error al reproducir: {e}"
+        await interaction.edit_original_response(content=f"❌ Error al reproducir: {e}")
+
+
+@bot.tree.command(name="play", description="Reproduce directamente el primer resultado (sin menú).")
+@app_commands.describe(query="Nombre de la canción")
+async def play(interaction: discord.Interaction, query: str):
+    """Modo rápido: reproduce el primer resultado que no tenga DRM."""
+    await interaction.response.send_message(f"⏳ Buscando **{query}**...")
+    
+    try:
+        loop = asyncio.get_event_loop()
+        resultados = await asyncio.wait_for(
+            loop.run_in_executor(None, buscar_resultados_sync, query, 10),
+            timeout=60.0
         )
+    except Exception as e:
+        await interaction.edit_original_response(content=f"❌ Error: {e}")
+        return
+    
+    # Conectar al canal
+    if not interaction.guild.voice_client:
+        if interaction.user.voice:
+            try:
+                await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+            except Exception as e:
+                await interaction.edit_original_response(content=f"❌ No pude conectarme: {e}")
+                return
+        else:
+            await interaction.edit_original_response(content="❌ ¡Debes estar en un canal de voz!")
+            return
+    
+    vc = interaction.guild.voice_client
+    
+    # Probar resultados hasta encontrar uno reproducible
+    for i, r in enumerate(resultados):
+        try:
+            loop = asyncio.get_event_loop()
+            stream_url, titulo = await asyncio.wait_for(
+                loop.run_in_executor(None, extraer_stream_de_url_sync, r['url']),
+                timeout=30.0
+            )
+            
+            def after_playing(error):
+                if error:
+                    print(f"⚠️ Error: {error}")
+            
+            if vc.is_playing():
+                vc.stop()
+            
+            source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
+            vc.play(source, after=after_playing)
+            
+            await interaction.edit_original_response(
+                content=f"🎵 Reproduciendo: **{titulo}**"
+            )
+            return
+        except Exception:
+            continue
+    
+    await interaction.edit_original_response(
+        content="❌ Ningún resultado era reproducible. Prueba `/buscar`."
+    )
 
 
 @bot.tree.command(name="background", description="Escucha el canal en segundo plano.")
 async def background(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if not vc:
-        await interaction.response.send_message(
-            "❌ El bot no está conectado a ningún canal.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ No estoy en un canal.", ephemeral=True)
         return
     try:
         vc.listen(VoiceActivitySink())
@@ -428,25 +474,7 @@ async def leave(interaction: discord.Interaction):
         await vc.disconnect()
         await interaction.response.send_message("👋 Desconectado.")
     else:
-        await interaction.response.send_message(
-            "❌ No estoy en ningún canal.",
-            ephemeral=True
-        )
-
-
-@bot.tree.command(name="debug", description="Diagnostica un track de SoundCloud.")
-@app_commands.describe(url="URL del track de SoundCloud")
-async def debug(interaction: discord.Interaction, url: str):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, debug_sc, url)
-        await interaction.followup.send(
-            "✅ Diagnóstico completado. Revisa los logs.",
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+        await interaction.response.send_message("❌ No estoy en un canal.", ephemeral=True)
 
 
 # =========================================================
