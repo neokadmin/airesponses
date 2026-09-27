@@ -92,9 +92,9 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones de yt-dlp con formato de audio flexible y compatible
+# Opciones de yt-dlp con formato abierto y universal
 YDL_OPTIONS = {
-    'format': 'bestaudio[ext=m4a]/bestaudio/best',
+    'format': 'bestaudio/best',
     'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
