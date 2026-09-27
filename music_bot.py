@@ -1,5 +1,6 @@
 import os
 import shutil
+import urllib.parse
 threading_mod = __import__('threading')
 
 # =========================================================
@@ -108,6 +109,8 @@ def descargar_audio_sync(query):
     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
         info = ydl.extract_info(query, download=True)
         if 'entries' in info:
+            if not info['entries']:
+                raise Exception("No se encontraron resultados.")
             info = info['entries'][0]
         
         filename = ydl.prepare_filename(info)
@@ -131,7 +134,6 @@ async def join(interaction: discord.Interaction):
 @bot.tree.command(name="play", description="Descarga y reproduce música de forma fluida.")
 @app_commands.describe(busqueda="Nombre de la canción o enlace")
 async def play(interaction: discord.Interaction, busqueda: str):
-    # Usamos ephemeral=False pero respondemos de inmediato para evitar el timeout de Discord
     await interaction.response.send_message(f"⏳ Buscando y preparando: **{busqueda}**...", ephemeral=False)
     
     if not interaction.guild.voice_client:
@@ -147,9 +149,11 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
+    # Construimos una URL de búsqueda compatible mediante una instancia pública de Invidious
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
-        query = f"ivsearch:{busqueda}"
+        encoded_query = urllib.parse.quote(busqueda)
+        query = f"https://invidious.nerdvpn.de/search?q={encoded_query}"
 
     try:
         loop = asyncio.get_event_loop()
