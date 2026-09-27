@@ -49,7 +49,7 @@ if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (Invidious / Libre de Bloqueos)
+# 3. LÓGICA DE TU BOT DE MÚSICA
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -82,7 +82,6 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Configuración genérica para descargar audio sin restricciones de bot
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
@@ -127,23 +126,27 @@ async def join(interaction: discord.Interaction):
         await interaction.guild.voice_client.move_to(channel)
     else:
         await channel.connect(cls=voice_recv.VoiceRecvClient)
-    await interaction.response.send_message(f"✅ Me he unido à **{channel.name}**")
+    await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
-@bot.tree.command(name="play", description="Descarga y reproduce música usando buscadores libres.")
-@app_commands.describe(busqueda="Nombre de la canción o artista")
+@bot.tree.command(name="play", description="Descarga y reproduce música de forma fluida.")
+@app_commands.describe(busqueda="Nombre de la canción o enlace")
 async def play(interaction: discord.Interaction, busqueda: str):
-    await interaction.response.defer()
+    # Usamos ephemeral=False pero respondemos de inmediato para evitar el timeout de Discord
+    await interaction.response.send_message(f"⏳ Buscando y preparando: **{busqueda}**...", ephemeral=False)
     
     if not interaction.guild.voice_client:
         if interaction.user.voice:
-            await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+            try:
+                await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+            except Exception as e:
+                await interaction.edit_original_response(content=f"❌ No pude conectarme al canal de voz: {e}")
+                return
         else:
-            await interaction.followup.send("❌ ¡Debes estar en un canal de voz!")
+            await interaction.edit_original_response(content="❌ ¡Debes estar en un canal de voz!")
             return
 
     vc = interaction.guild.voice_client
 
-    # Usamos invidious en lugar de YouTube directo para saltarnos el bloqueo de bot en Render
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
         query = f"ivsearch:{busqueda}"
@@ -152,7 +155,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
         loop = asyncio.get_event_loop()
         filepath, titulo = await loop.run_in_executor(None, descargar_audio_sync, query)
     except Exception as e:
-        await interaction.followup.send(f"❌ Error al procesar la búsqueda libre: {e}")
+        await interaction.edit_original_response(content=f"❌ Error al procesar el audio: {e}")
         return
 
     def after_playing(error):
@@ -171,9 +174,9 @@ async def play(interaction: discord.Interaction, busqueda: str):
         
         source = discord.FFmpegPCMAudio(filepath, **FFMPEG_OPTIONS)
         vc.play(source, after=after_playing)
-        await interaction.followup.send(f"🎵 Descargado y reproduciendo: **{titulo}**")
+        await interaction.edit_original_response(content=f"🎵 Reproduciendo ahora: **{titulo}**")
     except Exception as e:
-        await interaction.followup.send(f"❌ Error al iniciar el audio: {e}")
+        await interaction.edit_original_response(content=f"❌ Error al iniciar el audio: {e}")
         if os.path.exists(filepath):
             os.remove(filepath)
 
