@@ -49,7 +49,7 @@ if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (SoundCloud Search Nativo)
+# 3. LÓGICA DE TU BOT DE MÚSICA (YouTube Bypass Cliente Android)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -82,6 +82,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
+# Opciones de yt-dlp con el truco del cliente Android para evitar bloqueos en la nube
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
@@ -97,6 +98,11 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'socket_timeout': 15,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'web']
+        }
+    }
 }
 
 FFMPEG_OPTIONS = {
@@ -109,7 +115,7 @@ def descargar_audio_sync(query):
         info = ydl.extract_info(query, download=True)
         if 'entries' in info:
             if not info['entries']:
-                raise Exception("No se encontraron resultados.")
+                raise Exception("No se encontraron resultados en YouTube.")
             info = info['entries'][0]
         
         filename = ydl.prepare_filename(info)
@@ -130,10 +136,10 @@ async def join(interaction: discord.Interaction):
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
-@bot.tree.command(name="play", description="Descarga y reproduce música de forma fluida.")
-@app_commands.describe(busqueda="Nombre de la canción o enlace")
+@bot.tree.command(name="play", description="Descarga y reproduce música de YouTube sin bloqueos.")
+@app_commands.describe(busqueda="Nombre de la canción o enlace de YouTube")
 async def play(interaction: discord.Interaction, busqueda: str):
-    await interaction.response.send_message(f"⏳ Buscando y preparando: **{busqueda}**...", ephemeral=False)
+    await interaction.response.send_message(f"⏳ Buscando en YouTube: **{busqueda}**...", ephemeral=False)
     
     if not interaction.guild.voice_client:
         if interaction.user.voice:
@@ -148,16 +154,16 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
-    # Usamos la búsqueda nativa y oficial de SoundCloud en yt-dlp
+    # Búsqueda nativa de YouTube optimizada con el bypass
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
-        query = f"scsearch1:{busqueda}"
+        query = f"ytsearch1:{busqueda}"
 
     try:
         loop = asyncio.get_event_loop()
         filepath, titulo = await loop.run_in_executor(None, descargar_audio_sync, query)
     except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error al procesar el audio: {e}")
+        await interaction.edit_original_response(content=f"❌ Error al descargar de YouTube: {e}")
         return
 
     def after_playing(error):
