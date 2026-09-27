@@ -60,6 +60,7 @@ def load_opus_lib():
                 continue
         print("⚠️ No se pudo cargar Opus")
 
+
 YDL_OPTIONS_SC = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -68,10 +69,9 @@ YDL_OPTIONS_SC = {
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
-    'socket_timeout': 20,
-    'retries': 5,
-    'extractor_retries': 5,
-    'fragment_retries': 5,
+    'socket_timeout': 15,
+    'retries': 3,
+    'extractor_retries': 3,
     'geo_bypass': True,
     'http_headers': {
         'User-Agent': (
@@ -119,22 +119,19 @@ def _obtener_mejor_url(info: dict):
     return info.get('url')
 
 
-def buscar_resultados_sync(query: str, cantidad: int = 15):
+def buscar_resultados_sync(query: str, cantidad: int = 10):
     """
-    Busca en SoundCloud. Aumentamos a 15 resultados por defecto
-    porque muchos suelen estar con DRM.
+    Busca en SoundCloud. Ahora devuelve resultados RÁPIDO.
+    NO valida DRM aquí (eso se hace al reproducir).
     """
     search_query = f'scsearch{cantidad}:{query}'
     print(f"🔍 Buscando: {search_query}")
     
-    try:
-        with yt_dlp.YoutubeDL(YDL_OPTIONS_SC) as ydl:
-            info = ydl.extract_info(search_query, download=False)
-    except Exception as e:
-        raise Exception(f"Error en búsqueda: {e}")
+    with yt_dlp.YoutubeDL(YDL_OPTIONS_SC) as ydl:
+        info = ydl.extract_info(search_query, download=False)
     
     if not info or 'entries' not in info:
-        raise Exception("No se encontraron resultados en SoundCloud")
+        raise Exception("No se encontraron resultados")
     
     entries = [e for e in (info.get('entries') or []) if e]
     if not entries:
@@ -149,7 +146,6 @@ def buscar_resultados_sync(query: str, cantidad: int = 15):
             'url': entry.get('webpage_url') or entry.get('url'),
             'duracion': entry.get('duration'),
             'uploader': entry.get('uploader', 'Desconocido'),
-            'thumbnail': entry.get('thumbnail'),
         })
     
     print(f"✅ {len(resultados)} resultados encontrados")
@@ -157,8 +153,8 @@ def buscar_resultados_sync(query: str, cantidad: int = 15):
 
 
 def extraer_stream_de_url_sync(url: str):
-    """Extrae la URL de streaming. Lanza excepción si es DRM o no disponible."""
-    print(f"🎵 Extrayendo stream: {url}")
+    """Extrae la URL de streaming. Lanza excepción si es DRM."""
+    print(f"🎵 Extrayendo: {url}")
     with yt_dlp.YoutubeDL(YDL_OPTIONS_SC) as ydl:
         info = ydl.extract_info(url, download=False)
     
@@ -172,49 +168,6 @@ def extraer_stream_de_url_sync(url: str):
         raise Exception("No se encontró URL de audio")
     
     return stream_url, titulo
-
-
-def validar_resultados_sync(resultados: list):
-    """
-    Valida cada resultado para saber si es reproducible o tiene DRM.
-    Devuelve la misma lista con un campo extra 'reproducible' (bool) y 'razon'.
-    
-    Se ejecuta en paralelo usando threads para mayor velocidad.
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    
-    def validar_uno(r):
-        try:
-            with yt_dlp.YoutubeDL({**YDL_OPTIONS_SC, 'socket_timeout': 10}) as ydl:
-                info = ydl.extract_info(r['url'], download=False)
-            stream_url = _obtener_mejor_url(info)
-            if stream_url:
-                return {**r, 'reproducible': True, 'razon': '', 'stream_url': stream_url}
-            else:
-                return {**r, 'reproducible': False, 'razon': 'sin audio', 'stream_url': None}
-        except Exception as e:
-            msg = str(e)
-            razon = 'DRM/Copyright' if es_error_drm(msg) else msg[:60]
-            return {**r, 'reproducible': False, 'razon': razon, 'stream_url': None}
-    
-    # Validar en paralelo con máximo 5 workers para no saturar
-    resultados_validados = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(validar_uno, r): r for r in resultados}
-        for future in as_completed(futures):
-            try:
-                resultados_validados.append(future.result())
-            except Exception:
-                pass
-    
-    # Reordenar manteniendo el orden original
-    orden = {r['url']: i for i, r in enumerate(resultados)}
-    resultados_validados.sort(key=lambda r: orden.get(r['url'], 999))
-    
-    reproducibles = sum(1 for r in resultados_validados if r['reproducible'])
-    print(f"✅ Validación completa: {reproducibles}/{len(resultados_validados)} reproducibles")
-    
-    return resultados_validados
 
 
 def formatear_duracion(segundos):
@@ -256,95 +209,59 @@ bot = MusicBot()
 
 
 # =========================================================
-# 5. COMANDO PRINCIPAL: /buscar
+# 5. COMANDO /buscar (VERSIÓN ARREGLADA - RÁPIDA)
 # =========================================================
 @bot.tree.command(name="buscar", description="Busca y elige con reacciones.")
 @app_commands.describe(query="Nombre de la canción a buscar")
 async def buscar(interaction: discord.Interaction, query: str):
-    await interaction.response.send_message(f"🔍 Buscando **{query}**...")
+    # Responder INMEDIATAMENTE para que no parezca colgado
+    await interaction.response.send_message(f"🔍 Buscando **{query}** en SoundCloud...")
     
-    # 1) Buscar resultados
+    # === PASO 1: Buscar resultados (rápido, ~5 seg) ===
     try:
         loop = asyncio.get_event_loop()
         resultados = await asyncio.wait_for(
-            loop.run_in_executor(None, buscar_resultados_sync, query, 15),
-            timeout=60.0
-        )
-    except asyncio.TimeoutError:
-        await interaction.edit_original_response(content="❌ Timeout buscando.")
-        return
-    except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error: {e}")
-        return
-    
-    if not resultados:
-        await interaction.edit_original_response(content="❌ Sin resultados.")
-        return
-    
-    # 2) Validar cuáles son reproducibles (filtrar DRM de antemano)
-    await interaction.edit_original_response(
-        content=f"🔎 Validando {len(resultados)} resultados, espera..."
-    )
-    
-    try:
-        loop = asyncio.get_event_loop()
-        resultados = await asyncio.wait_for(
-            loop.run_in_executor(None, validar_resultados_sync, resultados),
-            timeout=90.0
+            loop.run_in_executor(None, buscar_resultados_sync, query, 10),
+            timeout=45.0
         )
     except asyncio.TimeoutError:
         await interaction.edit_original_response(
-            content="❌ Timeout validando. Prueba de nuevo."
+            content="❌ Timeout buscando. Prueba de nuevo."
         )
         return
     except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error validando: {e}")
-        return
-    
-    # 3) Filtrar solo los reproducibles y limitar a 10
-    reproducibles = [r for r in resultados if r['reproducible']][:10]
-    no_reproducibles = [r for r in resultados if not r['reproducible']]
-    
-    if not reproducibles:
-        embed = discord.Embed(
-            title="⚠️ Todos los resultados tienen DRM o no están disponibles",
-            description=(
-                "Ninguno de los resultados pudo validarse como reproducible.\n\n"
-                "**Sugerencias:**\n"
-                "• Prueba con el nombre exacto de la canción\n"
-                "• Añade el artista al nombre\n"
-                "• Prueba con `cover`, `remix` o `live` al final\n\n"
-                f"**Resultados descartados:** {len(no_reproducibles)}"
-            ),
-            color=discord.Color.orange()
+        await interaction.edit_original_response(
+            content=f"❌ Error buscando: {e}"
         )
-        # Mostrar los títulos descartados
-        titulos_desc = "\n".join(f"• {r['titulo'][:60]} — _{r['razon']}_" 
-                                  for r in no_reproducibles[:5])
-        if titulos_desc:
-            embed.add_field(name="Ejemplos descartados", value=titulos_desc, inline=False)
-        
-        await interaction.edit_original_response(content=None, embed=embed)
         return
     
-    # 4) Construir embed con SOLO los reproducibles
+    if not resultados:
+        await interaction.edit_original_response(
+            content="❌ No se encontraron resultados."
+        )
+        return
+    
+    # Limitar a 10 (por los emojis)
+    resultados = resultados[:10]
+    
+    # === PASO 2: Mostrar el menú INMEDIATAMENTE ===
     embed = discord.Embed(
         title=f"🎵 Resultados para: {query}",
         description=(
-            f"**{len(reproducibles)} canciones reproducibles** de {len(resultados)} resultados.\n"
-            "Reacciona con el número para reproducir.\n"
-            "Reacciona con ❌ para cancelar."
+            "Reacciona con el número para reproducir esa canción.\n"
+            "Reacciona con ❌ para cancelar.\n\n"
+            "⚠️ Si la canción elegida tiene DRM, te lo avisaré y podrás elegir otra."
         ),
-        color=discord.Color.green()
+        color=discord.Color.blurple()
     )
     
-    for i, r in enumerate(reproducibles):
+    for i, r in enumerate(resultados):
         dur = formatear_duracion(r.get('duracion'))
         titulo = r['titulo'][:80]
         uploader = r.get('uploader', 'Desconocido')[:40]
         embed.add_field(
             name=f"{EMOJIS_NUMEROS[i]} {titulo}",
-            value=f"⏱️ `{dur}` | 👤 {uploader} | ✅ Reproducible",
+            value=f"⏱️ `{dur}` | 👤 {uploader}",
             inline=False
         )
     
@@ -352,45 +269,37 @@ async def buscar(interaction: discord.Interaction, query: str):
     
     mensaje = await interaction.edit_original_response(content=None, embed=embed)
     
-    # 5) Añadir reacciones (con manejo de errores detallado)
-    reacciones_ok = 0
-    for i in range(len(reproducibles)):
-        try:
-            await mensaje.add_reaction(EMOJIS_NUMEROS[i])
-            reacciones_ok += 1
-        except discord.Forbidden:
-            await interaction.edit_original_response(
-                content=(
-                    "❌ **El bot no tiene permiso para añadir reacciones.**\n\n"
-                    "**Solución:** En la configuración del canal, dale al bot "
-                    "el permiso `Add Reactions` (Añadir reacciones) y "
-                    "`Read Message History` (Leer historial de mensajes).\n\n"
-                    "**Alternativa:** Usa `/play <query>` que reproduce "
-                    "el primer resultado automáticamente."
-                )
-            )
-            return
-        except Exception as e:
-            print(f"⚠️ Error añadiendo reacción {i}: {e}")
-            continue
-    
+    # === PASO 3: Añadir reacciones ===
     try:
+        for i in range(len(resultados)):
+            await mensaje.add_reaction(EMOJIS_NUMEROS[i])
         await mensaje.add_reaction(EMOJI_CANCELAR)
+        print(f"✅ Reacciones añadidas correctamente")
+    except discord.Forbidden:
+        await interaction.edit_original_response(
+            content=(
+                "❌ **El bot no puede añadir reacciones.**\n\n"
+                "**Solución:** Dale al bot el permiso `Add Reactions` en este canal.\n\n"
+                "**Alternativa rápida:** Usa `/play` que reproduce automáticamente."
+            ),
+            embed=None
+        )
+        return
     except Exception as e:
-        print(f"⚠️ Error añadiendo cancelar: {e}")
-    
-    if reacciones_ok == 0:
+        print(f"⚠️ Error añadiendo reacciones: {e}")
+        await interaction.edit_original_response(
+            content=f"❌ Error añadiendo reacciones: {e}",
+            embed=None
+        )
         return
     
-    print(f"✅ {reacciones_ok} reacciones añadidas correctamente")
-    
-    # 6) Esperar reacción del usuario
+    # === PASO 4: Esperar reacción ===
     def check_reaccion(reaction, user):
         return (
             user.id == interaction.user.id
             and reaction.message.id == mensaje.id
             and (
-                str(reaction.emoji) in EMOJIS_NUMEROS[:len(reproducibles)]
+                str(reaction.emoji) in EMOJIS_NUMEROS[:len(resultados)]
                 or str(reaction.emoji) == EMOJI_CANCELAR
             )
         )
@@ -420,46 +329,75 @@ async def buscar(interaction: discord.Interaction, query: str):
         return
     
     idx = EMOJIS_NUMEROS.index(emoji_elegido)
-    elegido = reproducibles[idx]
+    elegido = resultados[idx]
     
+    # === PASO 5: Ahora SÍ validamos el elegido ===
     await interaction.edit_original_response(
-        content=f"⏳ Reproduciendo: **{elegido['titulo']}**...",
+        content=f"⏳ Cargando **{elegido['titulo']}**...",
         embed=None
     )
     
-    # 7) Conectar al canal de voz
+    # Conectar al canal de voz
     if not interaction.guild.voice_client:
         if interaction.user.voice:
             try:
                 await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
             except Exception as e:
-                await interaction.edit_original_response(content=f"❌ No pude conectarme: {e}")
+                await interaction.edit_original_response(
+                    content=f"❌ No pude conectarme: {e}"
+                )
                 return
         else:
-            await interaction.edit_original_response(content="❌ ¡Debes estar en un canal de voz!")
+            await interaction.edit_original_response(
+                content="❌ ¡Debes estar en un canal de voz!"
+            )
             return
     
     vc = interaction.guild.voice_client
     
-    # 8) Reproducir usando el stream_url ya validado
-    stream_url = elegido.get('stream_url')
-    if not stream_url:
-        # Reintentar extracción
+    # === PASO 6: Probar el elegido + fallback a otros ===
+    # Si el elegido falla (DRM), probamos los siguientes automáticamente
+    orden_prueba = [idx] + [i for i in range(len(resultados)) if i != idx]
+    
+    stream_url = None
+    titulo_final = None
+    reproduciendo_idx = None
+    
+    for intento_idx in orden_prueba:
+        candidato = resultados[intento_idx]
         try:
             loop = asyncio.get_event_loop()
-            stream_url, _ = await asyncio.wait_for(
-                loop.run_in_executor(None, extraer_stream_de_url_sync, elegido['url']),
-                timeout=30.0
+            stream_url, titulo_final = await asyncio.wait_for(
+                loop.run_in_executor(None, extraer_stream_de_url_sync, candidato['url']),
+                timeout=25.0
             )
+            reproduciendo_idx = intento_idx
+            break  # ¡Éxito!
+        except asyncio.TimeoutError:
+            print(f"⚠️ Timeout con: {candidato['titulo']}")
+            continue
         except Exception as e:
-            await interaction.edit_original_response(
-                content=f"❌ Error al extraer: {e}\nPrueba con otra opción."
-            )
-            return
+            msg = str(e)
+            if es_error_drm(msg):
+                print(f"⚠️ DRM detectado en: {candidato['titulo']}")
+            else:
+                print(f"⚠️ Error con {candidato['titulo']}: {msg[:80]}")
+            continue
     
+    if not stream_url:
+        await interaction.edit_original_response(
+            content=(
+                "❌ **Ninguna de las canciones se pudo reproducir.**\n"
+                "Todas tienen DRM o están bloqueadas.\n\n"
+                "**Sugerencia:** Prueba `/buscar` añadiendo `cover`, `remix` o `live` al final."
+            )
+        )
+        return
+    
+    # === PASO 7: Reproducir ===
     def after_playing(error):
         if error:
-            print(f"⚠️ Error en reproducción: {error}")
+            print(f"⚠️ Error reproduciendo: {error}")
     
     try:
         if vc.is_playing():
@@ -467,17 +405,28 @@ async def buscar(interaction: discord.Interaction, query: str):
         
         source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
         vc.play(source, after=after_playing)
-        await interaction.edit_original_response(
-            content=f"🎵 Reproduciendo: **{elegido['titulo']}**"
-        )
+        
+        if reproduciendo_idx != idx:
+            await interaction.edit_original_response(
+                content=(
+                    f"🎵 Reproduciendo: **{titulo_final}**\n"
+                    f"_(la original tenía DRM, cambié a otro resultado)_"
+                )
+            )
+        else:
+            await interaction.edit_original_response(
+                content=f"🎵 Reproduciendo: **{titulo_final}**"
+            )
     except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error: {e}")
+        await interaction.edit_original_response(
+            content=f"❌ Error al reproducir: {e}"
+        )
 
 
 # =========================================================
-# 6. COMANDO /play (modo rápido)
+# 6. COMANDO /play
 # =========================================================
-@bot.tree.command(name="play", description="Reproduce el primer resultado reproducible.")
+@bot.tree.command(name="play", description="Reproduce el primer resultado disponible.")
 @app_commands.describe(query="Nombre de la canción")
 async def play(interaction: discord.Interaction, query: str):
     await interaction.response.send_message(f"⏳ Buscando **{query}**...")
@@ -485,35 +434,18 @@ async def play(interaction: discord.Interaction, query: str):
     try:
         loop = asyncio.get_event_loop()
         resultados = await asyncio.wait_for(
-            loop.run_in_executor(None, buscar_resultados_sync, query, 15),
-            timeout=60.0
+            loop.run_in_executor(None, buscar_resultados_sync, query, 10),
+            timeout=45.0
         )
     except Exception as e:
         await interaction.edit_original_response(content=f"❌ Error: {e}")
         return
     
-    await interaction.edit_original_response(content="🔎 Validando resultados...")
-    
-    try:
-        loop = asyncio.get_event_loop()
-        resultados = await asyncio.wait_for(
-            loop.run_in_executor(None, validar_resultados_sync, resultados),
-            timeout=90.0
-        )
-    except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error: {e}")
+    if not resultados:
+        await interaction.edit_original_response(content="❌ Sin resultados.")
         return
     
-    reproducibles = [r for r in resultados if r['reproducible']]
-    if not reproducibles:
-        await interaction.edit_original_response(
-            content="❌ Ningún resultado reproducible. Prueba con otro nombre."
-        )
-        return
-    
-    elegido = reproducibles[0]
-    
-    # Conectar
+    # Conectar al canal
     if not interaction.guild.voice_client:
         if interaction.user.voice:
             try:
@@ -522,25 +454,48 @@ async def play(interaction: discord.Interaction, query: str):
                 await interaction.edit_original_response(content=f"❌ No pude conectarme: {e}")
                 return
         else:
-            await interaction.edit_original_response(content="❌ ¡Debes estar en un canal de voz!")
+            await interaction.edit_original_response(content="❌ ¡Debes estar en un canal!")
             return
     
     vc = interaction.guild.voice_client
     
-    def after_playing(error):
-        if error:
-            print(f"⚠️ Error: {error}")
+    # Probar uno por uno hasta encontrar reproducible
+    for i, r in enumerate(resultados):
+        try:
+            await interaction.edit_original_response(
+                content=f"⏳ Probando resultado {i+1}/{len(resultados)}: **{r['titulo'][:60]}**..."
+            )
+            
+            loop = asyncio.get_event_loop()
+            stream_url, titulo = await asyncio.wait_for(
+                loop.run_in_executor(None, extraer_stream_de_url_sync, r['url']),
+                timeout=25.0
+            )
+            
+            def after_playing(error):
+                if error:
+                    print(f"⚠️ Error: {error}")
+            
+            if vc.is_playing():
+                vc.stop()
+            
+            source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
+            vc.play(source, after=after_playing)
+            
+            await interaction.edit_original_response(
+                content=f"🎵 Reproduciendo: **{titulo}**"
+            )
+            return
+            
+        except Exception as e:
+            msg = str(e)
+            if es_error_drm(msg):
+                print(f"⚠️ DRM en: {r['titulo']}")
+            continue
     
-    try:
-        if vc.is_playing():
-            vc.stop()
-        source = discord.FFmpegPCMAudio(elegido['stream_url'], **FFMPEG_OPTIONS)
-        vc.play(source, after=after_playing)
-        await interaction.edit_original_response(
-            content=f"🎵 Reproduciendo: **{elegido['titulo']}**"
-        )
-    except Exception as e:
-        await interaction.edit_original_response(content=f"❌ Error: {e}")
+    await interaction.edit_original_response(
+        content="❌ Ningún resultado reproducible. Prueba con otro nombre."
+    )
 
 
 # =========================================================
