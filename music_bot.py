@@ -59,7 +59,7 @@ else:
     print("⚠️ Advertencia: No se encontró el archivo de cookies en /etc/secrets/cookies.txt")
 
 # =========================================================
-# 3. LÓGICA DE TU BOT DE MÚSICA (Streaming con Timeout Anticongelamiento)
+# 3. LÓGICA DE TU BOT DE MÚSICA (Streaming flexible)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -92,9 +92,9 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Opciones de yt-dlp optimizadas para streaming rápido
+# Opciones de yt-dlp con formato abierto para evitar restricciones de streaming
 YDL_OPTIONS = {
-    'format': 'bestaudio/best',
+    'format': 'best', # <--- Cambiado a 'best' para aceptar el stream disponible de forma directa
     'noplaylist': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
@@ -163,7 +163,6 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     try:
         loop = asyncio.get_event_loop()
-        # Envolvemos la extracción en un asyncio.wait_for de 12 segundos para evitar congelamientos eternos
         stream_url, titulo = await asyncio.wait_for(
             loop.run_in_executor(None, obtener_stream_url_sync, query), 
             timeout=12.0
