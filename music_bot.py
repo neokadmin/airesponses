@@ -92,8 +92,9 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
+# Opciones de yt-dlp con formato de audio flexible y compatible
 YDL_OPTIONS = {
-    'format': 'bestaudio/best',
+    'format': 'bestaudio[ext=m4a]/bestaudio/best',
     'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
@@ -107,7 +108,7 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'socket_timeout': 15,
-    'cookiefile': COOKIES_PATH,  # <--- Usamos la copia editable
+    'cookiefile': COOKIES_PATH,
     'extractor_args': {
         'youtube': {
             'player_client': ['android', 'web']
