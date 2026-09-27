@@ -1,17 +1,6 @@
 import os
 import threading
-import tempfile
-import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
-# =========================================================
-# 0. ACTUALIZAR YT-DLP AUTOMÁTICAMENTE EN CADA INICIO (RENDER)
-# =========================================================
-try:
-    print("🔄 Actualizando yt-dlp a la última versión...")
-    subprocess.run(["pip", "install", "--upgrade", "yt-dlp"], check=False)
-except Exception as e:
-    print(f"No se pudo actualizar yt-dlp automáticamente: {e}")
 
 # =========================================================
 # 1. SERVIDOR KEEP-ALIVE (Soporte UptimeRobot Gratis)
@@ -54,23 +43,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =========================================================
-# 3. GESTIÓN DE COOKIES DESDE RENDER (ENV)
-# =========================================================
-def get_cookies_file():
-    cookies_content = os.getenv("COOKIES_TXT")
-    if cookies_content:
-        temp_cookies = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8")
-        temp_cookies.write(cookies_content)
-        temp_cookies.close()
-        return temp_cookies.name
-    elif os.path.exists('cookies.txt'):
-        return 'cookies.txt'
-    return None
-
-COOKIE_PATH = get_cookies_file()
-
-# =========================================================
-# 4. LÓGICA DE TU BOT DE MÚSICA
+# 3. LÓGICA DE TU BOT DE MÚSICA (Optimizado para Jamendo - Sin Copyright)
 # =========================================================
 def load_opus_lib():
     if not discord.opus.is_loaded():
@@ -103,7 +76,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Configuración con web_safari para sortear el error de recarga de página
+# Opciones limpias para plataformas libres como Jamendo
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -118,12 +91,6 @@ YDL_OPTIONS = {
     'no_warnings': True,
     'source_address': '0.0.0.0',
     'socket_timeout': 15,
-    'cookiefile': COOKIE_PATH,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['web_safari', 'web_embedded']
-        }
-    }
 }
 
 FFMPEG_OPTIONS = {
@@ -147,8 +114,8 @@ async def join(interaction: discord.Interaction):
         await channel.connect(cls=voice_recv.VoiceRecvClient)
     await interaction.response.send_message(f"✅ Me he unido a **{channel.name}**")
 
-@bot.tree.command(name="play", description="Reproduce música desde una URL de YouTube o palabras clave.")
-@app_commands.describe(busqueda="Enlace de YouTube o nombre de la canción")
+@bot.tree.command(name="play", description="Reproduce música libre de copyright usando Jamendo.")
+@app_commands.describe(busqueda="Nombre de la canción o estilo musical (ej: electronic, rock, lofi)")
 async def play(interaction: discord.Interaction, busqueda: str):
     await interaction.response.defer()
     
@@ -161,9 +128,10 @@ async def play(interaction: discord.Interaction, busqueda: str):
 
     vc = interaction.guild.voice_client
 
+    # Si no pasan un enlace directo, utilizamos el buscador interno de Jamendo (jamendo:)
     query = busqueda
     if not busqueda.startswith("http://") and not busqueda.startswith("https://"):
-        query = f"ytsearch1:{busqueda}"
+        query = f"jamendo:{busqueda}"
 
     try:
         loop = asyncio.get_event_loop()
@@ -171,7 +139,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
         
         if 'entries' in info:
             if not info['entries']:
-                await interaction.followup.send("❌ No se encontraron resultados para tu búsqueda.")
+                await interaction.followup.send("❌ No se encontraron resultados en Jamendo para tu búsqueda.")
                 return
             video_data = info['entries'][0]
         else:
@@ -189,7 +157,7 @@ async def play(interaction: discord.Interaction, busqueda: str):
         
         source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
         vc.play(source)
-        await interaction.followup.send(f"🎵 Reproduciendo ahora: **{titulo}**")
+        await interaction.followup.send(f"🎵 Reproduciendo ahora (Jamendo Libre): **{titulo}**")
     except Exception as e:
         await interaction.followup.send(f"❌ Error al reproducir audio: {e}")
 
@@ -215,6 +183,6 @@ async def leave(interaction: discord.Interaction):
         await interaction.response.send_message("❌ No estoy en ningún canal de voz.", ephemeral=True)
 
 # =========================================================
-# 5. EJECUCIÓN FINAL DE DISCORD
+# 4. EJECUCIÓN FINAL DE DISCORD
 # =========================================================
 bot.run(os.getenv("DISCORD_TOKEN"))
