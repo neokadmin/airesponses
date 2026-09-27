@@ -92,9 +92,7 @@ class MusicBot(commands.Bot):
 
 bot = MusicBot()
 
-# Reemplazamos format_sort por un formato universal y tolerante:
-# - 'bestaudio' permite elegir cualquier audio disponible, sin forzar codec/resolución.
-# - Esto evita 'Requested format is not available' cuando YouTube no ofrece ese formato exacto.
+# Opciones de yt-dlp: pedir el mejor audio disponible; la función de extracción implementa fallbacks
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -118,31 +116,77 @@ FFMPEG_OPTIONS = {
 }
 
 def obtener_stream_url_sync(query):
-    with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-        info = ydl.extract_info(query, download=False)
-        if 'entries' in info:
+    """
+    Extrae una URL directa de streaming desde yt-dlp seleccionando un formato de audio adecuado.
+    Implementa varias variantes/fallbacks para evitar el error "Requested format is not available".
+    """
+    import copy
+    from yt_dlp import utils as ytdlp_utils
+
+    variantes = []
+    # 1) Opciones preferidas (bestaudio)
+    variantes.append(copy.deepcopy(YDL_OPTIONS))
+
+    # 2) Fallback: priorizar webm opus si existe
+    fb1 = copy.deepcopy(YDL_OPTIONS)
+    fb1['format'] = 'bestaudio[ext=webm]/bestaudio/best'
+    variantes.append(fb1)
+
+    # 3) Fallback final: eliminar el filtro de formato completamente
+    fb2 = copy.deepcopy(YDL_OPTIONS)
+    if 'format' in fb2:
+        del fb2['format']
+    variantes.append(fb2)
+
+    last_error = None
+
+    for opts in variantes:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(query, download=False)
+        except ytdlp_utils.DownloadError as e:
+            last_error = str(e)
+            # Si es un error de formato pedimos la siguiente variante
+            if 'Requested format is not available' in last_error or 'format not available' in last_error:
+                continue
+            # Otros errores, re-lanzamos para que el caller los vea
+            raise Exception(f"yt-dlp error: {e}")
+        except Exception as e:
+            last_error = str(e)
+            # Intentar siguiente variante
+            continue
+
+        # Si es una búsqueda, tomar la primera entrada
+        if isinstance(info, dict) and 'entries' in info:
             if not info['entries']:
                 raise Exception("No se encontraron resultados en YouTube.")
             info = info['entries'][0]
 
-        formats = info.get('formats') or []
-        stream_url = info.get('url')
         titulo = info.get('title', 'Audio desconocido')
 
+        # Preferir una URL desde formats si está disponible
+        formats = info.get('formats') or []
         if formats:
-            compatible = [
+            audio_formats = [
                 f for f in formats
-                if f.get('url') and (f.get('vcodec') in (None, 'none') or f.get('acodec'))
+                if f.get('url') and f.get('acodec') and f.get('acodec') != 'none'
             ]
-            if compatible:
-                # Elegimos el mejor audio disponible sin exigir codec exacto.
-                compatible.sort(key=lambda f: (f.get('tbr') or 0, f.get('abr') or 0), reverse=True)
-                stream_url = compatible[0].get('url')
+            if audio_formats:
+                # Preferir opus (audio-only), luego mayor bitrate
+                opus = next((f for f in audio_formats if f.get('acodec') == 'opus' and (not f.get('vcodec') or f.get('vcodec') == 'none')), None)
+                if opus:
+                    stream_url = opus.get('url')
+                else:
+                    stream_url = max(audio_formats, key=lambda f: (f.get('abr') or f.get('tbr') or 0)).get('url')
+                return stream_url, titulo
 
-        if not stream_url:
-            raise Exception('No fue posible determinar una URL de streaming válida para este recurso.')
+        # Fallback: usar URL raíz
+        stream_url = info.get('url')
+        if stream_url:
+            return stream_url, titulo
 
-        return stream_url, titulo
+    # Si llegamos aquí, todas las variantes fallaron
+    raise Exception(f"No fue posible determinar una URL de streaming válida. Último error: {last_error}")
 
 @bot.tree.command(name="join", description="Une al bot a tu canal de voz actual.")
 async def join(interaction: discord.Interaction):
