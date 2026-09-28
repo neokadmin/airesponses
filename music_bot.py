@@ -47,7 +47,6 @@ load_dotenv()
 TEMP_DIR = "temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Nombre original del bot (para restaurar)
 NOMBRE_ORIGINAL = None
 
 # =========================================================
@@ -477,9 +476,7 @@ async def cambiar_nickname_bot(guild, nombre_cancion, categoria=None):
 async def restaurar_nickname_bot(guild):
     if guild is None:
         return False
-    
     global NOMBRE_ORIGINAL
-    
     try:
         await guild.me.edit(nick=NOMBRE_ORIGINAL)
         print("🏷️ Nickname restaurado")
@@ -869,7 +866,12 @@ async def play(interaction: discord.Interaction, query: str):
     guild = interaction.guild
     guild_id = guild.id
     
+    reproducido = False
+    
     for i, r in enumerate(a_probar):
+        if reproducido:
+            break
+        
         cat = r.get('categoria', 'ORIGINAL')
         try:
             await interaction.edit_original_response(
@@ -896,14 +898,14 @@ async def play(interaction: discord.Interaction, query: str):
                 guild=guild,
             )
             
-            def after_playing(error):
+            def after_playing(error, g=guild, gid=guild_id):
                 if error:
                     print(f"⚠️ Error: {error}")
-                if guild_id in barras_activas:
-                    barras_activas[guild_id].detener()
-                    del barras_activas[guild_id]
+                if gid in barras_activas:
+                    barras_activas[gid].detener()
+                    del barras_activas[gid]
                 asyncio.run_coroutine_threadsafe(
-                    restaurar_nickname_bot(guild),
+                    restaurar_nickname_bot(g),
                     bot.loop
                 )
             
@@ -915,3 +917,162 @@ async def play(interaction: discord.Interaction, query: str):
             
             await cambiar_nickname_bot(guild, titulo, cat)
             
+            embed_inicial = barra.construir_embed()
+            if cat != 'ORIGINAL':
+                embed_inicial.set_footer(
+                    text=f"⚠️ No encontré el original, usé un {cat}"
+                )
+            
+            await interaction.edit_original_response(content=None, embed=embed_inicial)
+            barra.mensaje = await interaction.original_response()
+            barra.iniciar()
+            barra.tarea = asyncio.create_task(barra.actualizar_loop())
+            barras_activas[guild_id] = barra
+            reproducido = True
+            print(f"▶️ Reproduciendo: {titulo}")
+        except Exception as e:
+            print(f"⚠️ Fallo {i+1}: {str(e)[:80]}")
+            continue
+    
+    if not reproducido:
+        await interaction.edit_original_response(
+            content=f"❌ Ningún resultado reproducible para `{query}`."
+        )
+
+
+# =========================================================
+# 10. COMANDO /pausar
+# =========================================================
+@bot.tree.command(name="pausar", description="Pausa o reanuda la música actual.")
+async def pausar(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_playing():
+        await interaction.response.send_message(
+            "❌ No hay música reproduciéndose.",
+            ephemeral=True
+        )
+        return
+    
+    guild_id = interaction.guild.id
+    barra = barras_activas.get(guild_id)
+    
+    if vc.is_paused():
+        vc.resume()
+        if barra:
+            barra.reanudar()
+        await interaction.response.send_message("▶️ Reanudado.")
+    else:
+        vc.pause()
+        if barra:
+            barra.pausar()
+        await interaction.response.send_message("⏸️ Pausado.")
+
+
+# =========================================================
+# 11. COMANDO /saltar
+# =========================================================
+@bot.tree.command(name="saltar", description="Detiene la canción actual.")
+async def saltar(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_playing():
+        await interaction.response.send_message(
+            "❌ No hay nada reproduciéndose.",
+            ephemeral=True
+        )
+        return
+    
+    guild_id = interaction.guild.id
+    if guild_id in barras_activas:
+        barras_activas[guild_id].detener()
+        del barras_activas[guild_id]
+    
+    vc.stop()
+    await restaurar_nickname_bot(interaction.guild)
+    await interaction.response.send_message("⏭️ Canción detenida.")
+
+
+# =========================================================
+# 12. OTROS COMANDOS
+# =========================================================
+@bot.tree.command(name="join", description="Une al bot a tu canal de voz.")
+async def join(interaction: discord.Interaction):
+    if not interaction.user.voice:
+        await interaction.response.send_message("❌ ¡Debes estar en un canal!", ephemeral=True)
+        return
+    channel = interaction.user.voice.channel
+    if interaction.guild.voice_client:
+        await interaction.guild.voice_client.move_to(channel)
+    else:
+        await channel.connect(cls=voice_recv.VoiceRecvClient)
+    await interaction.response.send_message(f"✅ Me uní a **{channel.name}**")
+
+
+@bot.tree.command(name="background", description="Escucha el canal en segundo plano.")
+async def background(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if not vc:
+        await interaction.response.send_message("❌ No estoy en un canal.", ephemeral=True)
+        return
+    try:
+        vc.listen(VoiceActivitySink())
+        await interaction.response.send_message("🎙️ Modo escucha activado.")
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="leave", description="Desconecta al bot.")
+async def leave(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    guild_id = interaction.guild.id
+    
+    if guild_id in barras_activas:
+        barras_activas[guild_id].detener()
+        del barras_activas[guild_id]
+    
+    if vc:
+        await vc.disconnect()
+        await restaurar_nickname_bot(interaction.guild)
+        await interaction.response.send_message("👋 Desconectado.")
+    else:
+        await interaction.response.send_message("❌ No estoy en un canal.", ephemeral=True)
+
+
+@bot.tree.command(name="diagnostico", description="Muestra el estado de intents y permisos.")
+async def diagnostico(interaction: discord.Interaction):
+    embed = discord.Embed(title="🔧 Diagnóstico", color=discord.Color.blue())
+    embed.add_field(
+        name="Intents",
+        value=(
+            f"• message_content: `{bot.intents.message_content}`\n"
+            f"• reactions: `{bot.intents.reactions}`\n"
+            f"• voice_states: `{bot.intents.voice_states}`"
+        ),
+        inline=False
+    )
+    
+    channel = interaction.channel
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        me = interaction.guild.me
+        permisos = channel.permissions_for(me)
+        embed.add_field(
+            name="Permisos en este canal",
+            value=(
+                f"• Add Reactions: `{permisos.add_reactions}`\n"
+                f"• Read Message History: `{permisos.read_message_history}`\n"
+                f"• Manage Nicknames: `{permisos.manage_nicknames}`"
+            ),
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# 13. EJECUCIÓN
+# =========================================================
+if __name__ == "__main__":
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        print("❌ ERROR: DISCORD_TOKEN no configurado")
+        exit(1)
+    bot.run(token)
