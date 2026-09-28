@@ -39,12 +39,16 @@ from discord.ext import voice_recv
 from discord import app_commands
 import yt_dlp
 import asyncio
+import time
 from dotenv import load_dotenv
 
 load_dotenv()
 
 TEMP_DIR = "temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Nombre original del bot (por si hay que restaurarlo)
+NOMBRE_ORIGINAL = None  # Se establecerá en setup_hook
 
 # =========================================================
 # 3. CONFIGURACIÓN YT-DLP
@@ -61,6 +65,15 @@ def load_opus_lib():
         print("⚠️ No se pudo cargar Opus")
 
 
+def _filtro_sin_drm(info_dict, *, incomplete=False):
+    if info_dict.get('has_drm'):
+        return "DRM protegido (saltado)"
+    for f in (info_dict.get('formats') or []):
+        if f.get('has_drm'):
+            return "DRM protegido (saltado)"
+    return None
+
+
 YDL_OPTIONS_BUSQUEDA = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -73,6 +86,7 @@ YDL_OPTIONS_BUSQUEDA = {
     'retries': 2,
     'extractor_retries': 2,
     'geo_bypass': True,
+    'match_filter': _filtro_sin_drm,
     'http_headers': {
         'User-Agent': (
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -130,6 +144,7 @@ def _obtener_mejor_url(info: dict):
         audio_formats = [
             f for f in formats
             if f.get('url') and f.get('acodec') and f.get('acodec') != 'none'
+            and not f.get('has_drm')
         ]
         if audio_formats:
             opus = next((f for f in audio_formats if f.get('acodec') == 'opus'), None)
@@ -146,15 +161,6 @@ def _formatear_duracion(segundos):
         return "??:??"
     segundos = int(segundos)
     return f"{segundos // 60}:{segundos % 60:02d}"
-
-
-PALABRAS_REMIX = [
-    'remix', 'cover', 'instrumental', 'karaoke', 'slowed',
-    'reverb', 'sped up', 'speed up', 'nightcore', 'mashup',
-    'bootleg', 'flip', 'edit', 'version', 'mix', 'dj ',
-    'rework', 'refix', 'vip', 'extended', 'radio edit',
-    'acoustic', 'live', 'demo', 'teaser', 'snippet', 'preview',
-]
 
 
 def _clasificar_resultado(titulo: str, query: str) -> str:
@@ -176,90 +182,79 @@ def _clasificar_resultado(titulo: str, query: str) -> str:
     return 'ORIGINAL'
 
 
-def buscar_resultados_sync(query: str):
-    print(f"🔍 Buscando ORIGINAL: {query}")
+def _buscar_en_proveedor(query: str, proveedor: str, cantidad: int = 15):
+    prefijos = {
+        'soundcloud': f'scsearch{cantidad}:',
+        'bandcamp':   f'bcsearch{cantidad}:',
+        'archiveorg': f'iasearch{cantidad}:',
+    }
+    if proveedor not in prefijos:
+        return []
+    
+    search_query = f'{prefijos[proveedor]}{query}'
+    print(f"🔍 [{proveedor}] {search_query}")
+    
+    try:
+        with yt_dlp.YoutubeDL(YDL_OPTIONS_BUSQUEDA) as ydl:
+            info = ydl.extract_info(search_query, download=False)
+    except Exception as e:
+        print(f"⚠️ Error en {proveedor}: {str(e)[:100]}")
+        return []
+    
+    if not info:
+        return []
     
     resultados = []
     urls_vistas = set()
     
-    try:
-        with yt_dlp.YoutubeDL(YDL_OPTIONS_BUSQUEDA) as ydl:
-            info = ydl.extract_info(f'scsearch20:{query}', download=False)
-    except Exception as e:
-        print(f"⚠️ Error buscando original: {str(e)[:100]}")
-        info = None
+    for entry in (info.get('entries') or []):
+        if not entry:
+            continue
+        url = entry.get('webpage_url') or entry.get('url')
+        if not url or url in urls_vistas:
+            continue
+        if not entry.get('formats') and not entry.get('url'):
+            continue
+        if entry.get('has_drm'):
+            continue
+        
+        urls_vistas.add(url)
+        resultados.append({
+            'titulo': entry.get('title', 'Sin título'),
+            'url': url,
+            'duracion': entry.get('duration'),
+            'uploader': entry.get('uploader', 'Desconocido'),
+            'categoria': _clasificar_resultado(entry.get('title', ''), query),
+            'proveedor': proveedor,
+        })
     
-    originales = []
-    no_originales = []
-    
-    if info:
-        entries = info.get('entries') or []
-        for entry in entries:
-            if not entry:
-                continue
-            url = entry.get('webpage_url') or entry.get('url')
-            if not url or url in urls_vistas:
-                continue
-            if not entry.get('formats') and not entry.get('url'):
-                continue
-            
-            urls_vistas.add(url)
-            titulo = entry.get('title', 'Sin título')
-            categoria = _clasificar_resultado(titulo, query)
-            
-            item = {
-                'titulo': titulo,
-                'url': url,
-                'duracion': entry.get('duration'),
-                'uploader': entry.get('uploader', 'Desconocido'),
-                'categoria': categoria,
-            }
-            
-            if categoria == 'ORIGINAL':
-                originales.append(item)
-            else:
-                no_originales.append(item)
-    
-    print(f"   ✅ {len(originales)} originales, {len(no_originales)} no-originales")
+    print(f"   ✅ {len(resultados)} resultados en {proveedor}")
+    return resultados
+
+
+def buscar_resultados_sync(query: str):
+    sc_resultados = _buscar_en_proveedor(query, 'soundcloud', 20)
+    originales = [r for r in sc_resultados if r['categoria'] == 'ORIGINAL']
+    no_originales = [r for r in sc_resultados if r['categoria'] != 'ORIGINAL']
     
     if len(originales) >= 3:
         return originales[:10]
     
-    resultados = originales.copy()
-    for item in no_originales:
-        if len(resultados) >= 10:
-            break
-        resultados.append(item)
+    resultados = originales + no_originales
     
-    if not resultados:
-        for extra in ['cover', 'remix']:
-            try:
-                with yt_dlp.YoutubeDL(YDL_OPTIONS_BUSQUEDA) as ydl:
-                    info = ydl.extract_info(f'scsearch5:{query} {extra}', download=False)
-                if info:
-                    for entry in (info.get('entries') or []):
-                        if not entry:
-                            continue
-                        url = entry.get('webpage_url') or entry.get('url')
-                        if not url or url in urls_vistas:
-                            continue
-                        urls_vistas.add(url)
-                        titulo = entry.get('title', 'Sin título')
-                        resultados.append({
-                            'titulo': titulo,
-                            'url': url,
-                            'duracion': entry.get('duration'),
-                            'uploader': entry.get('uploader', 'Desconocido'),
-                            'categoria': _clasificar_resultado(titulo, query),
-                        })
-                        if len(resultados) >= 10:
-                            break
-            except Exception as e:
-                print(f"⚠️ Error con '{extra}': {str(e)[:80]}")
-            if len(resultados) >= 10:
-                break
+    if len(resultados) < 3:
+        resultados.extend(_buscar_en_proveedor(query, 'bandcamp', 10))
+    if len(resultados) < 3:
+        resultados.extend(_buscar_en_proveedor(query, 'archiveorg', 10))
     
-    return resultados[:10]
+    vistos = set()
+    unicos = []
+    for r in resultados:
+        if r['url'] not in vistos:
+            vistos.add(r['url'])
+            unicos.append(r)
+    
+    return unicos[:10]
 
 
 def extraer_stream_de_url_sync(url: str):
@@ -269,18 +264,253 @@ def extraer_stream_de_url_sync(url: str):
     
     if not info:
         raise Exception("Info vacío")
+    if info.get('has_drm'):
+        raise Exception("DRM protegido")
     
     titulo = info.get('title', 'Desconocido')
+    duracion = info.get('duration')
     stream_url = _obtener_mejor_url(info)
     
     if not stream_url:
         raise Exception("No se encontró URL de audio")
     
-    return stream_url, titulo
+    return stream_url, titulo, duracion
 
 
 # =========================================================
-# 4. BOT
+# 4. BARRA DE PROGRESO
+# =========================================================
+def generar_barra_progreso(actual: float, total: float, ancho: int = 20) -> str:
+    if total <= 0:
+        return "▬" * ancho
+    progreso = min(actual / total, 1.0)
+    pos = int(progreso * ancho)
+    pos = min(pos, ancho - 1)
+    return "▬" * pos + "🔘" + "▬" * (ancho - pos - 1)
+
+
+def formatear_tiempo(segundos: float) -> str:
+    if segundos is None or segundos < 0:
+        return "0:00"
+    segundos = int(segundos)
+    return f"{segundos // 60}:{segundos % 60:02d}"
+
+
+class BarraProgreso:
+    def __init__(self, bot, interaction, titulo, duracion_total, canal_voz,
+                 thumbnail=None, uploader=None, categoria=None):
+        self.bot = bot
+        self.interaction = interaction
+        self.titulo = titulo
+        self.duracion_total = duracion_total or 0
+        self.canal_voz = canal_voz
+        self.thumbnail = thumbnail
+        self.uploader = uploader
+        self.categoria = categoria
+        self.inicio = None
+        self.pausado = False
+        self.tiempo_pausado = 0
+        self.tarea = None
+        self.mensaje = None
+        self.terminado = False
+    
+    def iniciar(self):
+        self.inicio = time.time()
+        self.terminado = False
+    
+    def pausar(self):
+        if not self.pausado:
+            self.pausado = True
+            self.tiempo_pausado = time.time()
+    
+    def reanudar(self):
+        if self.pausado:
+            duracion_pausa = time.time() - self.tiempo_pausado
+            self.inicio += duracion_pausa
+            self.pausado = False
+    
+    def obtener_tiempo_actual(self):
+        if self.inicio is None:
+            return 0
+        if self.pausado:
+            return self.tiempo_pausado - self.inicio
+        return time.time() - self.inicio
+    
+    def esta_reproduciendo(self):
+        return (
+            self.canal_voz
+            and self.canal_voz.is_playing()
+            and not self.terminado
+        )
+    
+    def construir_embed(self):
+        actual = self.obtener_tiempo_actual()
+        
+        if self.duracion_total > 0:
+            actual = min(actual, self.duracion_total)
+            barra = generar_barra_progreso(actual, self.duracion_total)
+            tiempo_texto = f"`{formatear_tiempo(actual)}` / `{formatear_tiempo(self.duracion_total)}`"
+        else:
+            barra = "🔘" + "▬" * 19
+            tiempo_texto = f"`{formatear_tiempo(actual)}` / `🔴 LIVE`"
+        
+        embed = discord.Embed(
+            title="🎵 Reproduciendo ahora",
+            description=(
+                f"**{self.titulo}**\n\n"
+                f"{barra}\n"
+                f"{tiempo_texto}"
+            ),
+            color=discord.Color.green()
+        )
+        
+        if self.uploader:
+            embed.add_field(name="👤 Artista", value=self.uploader, inline=True)
+        if self.categoria:
+            cat_emoji_map = {
+                'ORIGINAL': '✅', 'COVER': '🎤', 'REMIX': '🎧',
+                'INSTRUMENTAL': '🎹', 'SLOWED': '🐢', 'SPED UP': '⚡',
+                'LIVE': '🎙️', 'MASHUP': '🎛️',
+            }
+            cat_emoji = cat_emoji_map.get(self.categoria, '⚠️')
+            embed.add_field(name="🏷️ Tipo", value=f"{cat_emoji} {self.categoria}", inline=True)
+        
+        if self.thumbnail:
+            embed.set_thumbnail(url=self.thumbnail)
+        
+        embed.set_footer(text="La barra se actualiza cada 5 segundos")
+        return embed
+    
+    async def actualizar_loop(self):
+        try:
+            await self.actualizar()
+            while self.esta_reproduciendo():
+                await asyncio.sleep(5)
+                if self.esta_reproduciendo():
+                    await self.actualizar()
+            
+            self.terminado = True
+            await self.finalizar()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"⚠️ Error en barra de progreso: {e}")
+    
+    async def actualizar(self):
+        try:
+            if self.mensaje:
+                embed = self.construir_embed()
+                await self.mensaje.edit(embed=embed)
+        except discord.NotFound:
+            self.terminado = True
+        except Exception as e:
+            print(f"⚠️ Error actualizando barra: {e}")
+    
+    async def finalizar(self):
+        try:
+            if self.mensaje:
+                embed = discord.Embed(
+                    title="✅ Canción terminada",
+                    description=f"**{self.titulo}**\n\nYa puedes buscar otra con `/buscar`.",
+                    color=discord.Color.greyple()
+                )
+                await self.mensaje.edit(embed=embed)
+        except Exception:
+            pass
+    
+    def detener(self):
+        self.terminado = True
+        if self.tarea and not self.tarea.done():
+            self.tarea.cancel()
+
+
+# Registro global de barras activas por guild
+barras_activas = {}
+
+
+# =========================================================
+# 5. FUNCIONES DE NICKNAME DINÁMICO
+# =========================================================
+async def cambiar_nickname_bot(guild, nombre_cancion, categoria=None):
+    """
+    Cambia el apodo del bot en el servidor al nombre de la canción actual.
+    Formato: '🎵 Nombre de la canción' (limitado a 32 caracteres)
+    """
+    if guild is None:
+        return False
+    
+    # Limpiar el título: quitar caracteres raros y limitar longitud
+    titulo_limpio = nombre_cancion.strip()
+    # Quitar " - Topic", "(Official Audio)" etc comunes
+    for sufijo in [' - Topic', ' (Official Audio)', ' (Official Video)',
+                   ' (Audio)', ' (Lyrics)', ' (Lyric Video)', ' (Official)']:
+        if titulo_limpio.endswith(sufijo):
+            titulo_limpio = titulo_limpio[:-len(sufijo)].strip()
+    
+    # Emoji según categoría
+    if categoria == 'COVER':
+        prefijo = "🎤 "
+    elif categoria == 'REMIX':
+        prefijo = "🎧 "
+    elif categoria == 'INSTRUMENTAL':
+        prefijo = "🎹 "
+    elif categoria == 'SLOWED':
+        prefijo = "🐢 "
+    elif categoria == 'SPED UP':
+        prefijo = "⚡ "
+    elif categoria == 'LIVE':
+        prefijo = "🎙️ "
+    else:
+        prefijo = "🎵 "
+    
+    # Discord limita el nickname a 32 caracteres
+    max_len = 32 - len(prefijo)
+    if len(titulo_limpio) > max_len:
+        titulo_limpio = titulo_limpio[:max_len - 1].rstrip() + "…"
+    
+    nuevo_nick = f"{prefijo}{titulo_limpio}"
+    
+    # Guardar el nombre original si no está guardado
+    global NOMBRE_ORIGINAL
+    if NOMBRE_ORIGINAL is None:
+        NOMBRE_ORIGINAL = guild.me.display_name
+    
+    try:
+        await guild.me.edit(nick=nuevo_nick)
+        print(f"🏷️ Nickname cambiado a: {nuevo_nick}")
+        return True
+    except discord.Forbidden:
+        print("⚠️ No tengo permiso para cambiar mi nickname")
+        return False
+    except Exception as e:
+        print(f"⚠️ Error cambiando nickname: {e}")
+        return False
+
+
+async def restaurar_nickname_bot(guild):
+    """
+    Restaura el nickname original del bot.
+    Se llama cuando termina la reproducción y no hay nada más.
+    """
+    if guild is None:
+        return False
+    
+    global NOMBRE_ORIGINAL
+    
+    try:
+        if NOMBRE_ORIGINAL:
+            await guild.me.edit(nick=NOMBRE_ORIGINAL)
+        else:
+            await guild.me.edit(nick=None)  # Restaurar nombre por defecto
+        print(f"🏷️ Nickname restaurado")
+        return True
+    except Exception as e:
+        print(f"⚠️ Error restaurando nickname: {e}")
+        return False
+
+
+# =========================================================
+# 6. BOT
 # =========================================================
 class VoiceActivitySink(voice_recv.AudioSink):
     def __init__(self):
@@ -299,56 +529,33 @@ class MusicBot(commands.Bot):
         intents.message_content = True
         intents.voice_states = True
         intents.reactions = True
-        intents.guilds = True
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
         load_opus_lib()
         await self.tree.sync()
-        print("=" * 60)
-        print("✅ Bot iniciado y comandos sincronizados")
-        print(f"   intents.message_content = {self.intents.message_content}")
-        print(f"   intents.reactions = {self.intents.reactions}")
-        print(f"   intents.voice_states = {self.intents.voice_states}")
-        print("=" * 60)
+        print("✅ Bot iniciado con barra de progreso y nickname dinámico")
 
 
 bot = MusicBot()
 
 
 # =========================================================
-# 5. ESPERAR SELECCIÓN (reacción o chat) — VERSIÓN ROBUSTA
+# 7. ESPERAR SELECCIÓN
 # =========================================================
 async def esperar_seleccion(interaction, mensaje, cantidad_resultados, timeout=90.0):
-    """
-    Espera selección por reacción O por chat.
-    Hace LOG de todo para diagnosticar.
-    """
     loop = asyncio.get_event_loop()
     futuro_resultado = loop.create_future()
-    evento_cancelar_reacciones = asyncio.Event()
-    
-    print(f"⏳ Esperando selección del usuario {interaction.user} "
-          f"({cantidad_resultados} opciones, {timeout}s)")
     
     def resolver(indice, forma):
         if not futuro_resultado.done():
-            print(f"   🎯 Resuelto: idx={indice}, forma={forma}")
             futuro_resultado.set_result((indice, forma))
     
-    # Listener de reacciones
     def check_reaccion(reaction, user):
-        mismo_mensaje = reaction.message.id == mensaje.id
-        mismo_usuario = user.id == interaction.user.id
-        es_bot = user.bot
-        
-        if mismo_mensaje and mismo_usuario and not es_bot:
-            print(f"   🔔 Reacción detectada: {reaction.emoji} de {user}")
-        
         return (
-            mismo_usuario
-            and not es_bot
-            and mismo_mensaje
+            user.id == interaction.user.id
+            and not user.bot
+            and reaction.message.id == mensaje.id
             and (
                 str(reaction.emoji) in EMOJIS_NUMEROS[:cantidad_resultados]
                 or str(reaction.emoji) == EMOJI_CANCELAR
@@ -365,20 +572,15 @@ async def esperar_seleccion(interaction, mensaje, cantidad_resultados, timeout=9
                 resolver(-1, 'cancelar')
             else:
                 resolver(EMOJIS_NUMEROS.index(emoji), 'reaccion')
-        except asyncio.TimeoutError:
-            print("   ⏰ Listener de reacciones: timeout")
-        except asyncio.CancelledError:
-            print("   ❌ Listener de reacciones: cancelado")
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
         except Exception as e:
-            print(f"   ⚠️ Error en listener de reacciones: {e}")
+            print(f"⚠️ Error en listener reacciones: {e}")
     
-    # Listener de mensajes
     def check_mensaje(message):
-        if message.author.id != interaction.user.id:
+        if message.author.id != interaction.user.id or message.author.bot:
             return False
         if message.channel.id != interaction.channel_id:
-            return False
-        if message.author.bot:
             return False
         contenido = message.content.strip().lower()
         if contenido in ('cancelar', 'cancela', 'cancel', 'x', 'no'):
@@ -393,7 +595,6 @@ async def esperar_seleccion(interaction, mensaje, cantidad_resultados, timeout=9
         try:
             message = await bot.wait_for('message', timeout=timeout, check=check_mensaje)
             contenido = message.content.strip().lower()
-            print(f"   💬 Mensaje detectado: '{contenido}'")
             if contenido in ('cancelar', 'cancela', 'cancel', 'x', 'no'):
                 resolver(-1, 'cancelar')
             else:
@@ -402,12 +603,10 @@ async def esperar_seleccion(interaction, mensaje, cantidad_resultados, timeout=9
                 await message.delete()
             except Exception:
                 pass
-        except asyncio.TimeoutError:
-            print("   ⏰ Listener de mensajes: timeout")
-        except asyncio.CancelledError:
-            print("   ❌ Listener de mensajes: cancelado")
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
         except Exception as e:
-            print(f"   ⚠️ Error en listener de mensajes: {e}")
+            print(f"⚠️ Error en listener mensajes: {e}")
     
     tarea_reacciones = asyncio.create_task(escuchar_reacciones())
     tarea_mensajes = asyncio.create_task(escuchar_mensajes())
@@ -415,7 +614,6 @@ async def esperar_seleccion(interaction, mensaje, cantidad_resultados, timeout=9
     try:
         resultado = await asyncio.wait_for(futuro_resultado, timeout=timeout + 2)
     except asyncio.TimeoutError:
-        print("   ⏰ Timeout total esperando selección")
         resultado = (None, 'timeout')
     finally:
         for t in (tarea_reacciones, tarea_mensajes):
@@ -431,68 +629,18 @@ async def esperar_seleccion(interaction, mensaje, cantidad_resultados, timeout=9
 
 
 # =========================================================
-# 6. VERIFICAR PERMISOS ANTES DE MOSTRAR MENÚ
-# =========================================================
-async def verificar_permisos_canal(interaction):
-    """
-    Verifica que el bot tenga los permisos necesarios en el canal.
-    Devuelve (ok: bool, mensaje_error: str|None)
-    """
-    channel = interaction.channel
-    if not isinstance(channel, discord.TextChannel):
-        return True, None
-    
-    me = interaction.guild.me
-    
-    # Permisos requeridos
-    permisos_req = {
-        'add_reactions': 'Añadir reacciones',
-        'read_message_history': 'Leer historial de mensajes',
-        'send_messages': 'Enviar mensajes',
-    }
-    
-    if not isinstance(channel, discord.Thread):
-        permisos = channel.permissions_for(me)
-    else:
-        permisos = channel.permissions_for(me)
-    
-    faltantes = []
-    for perm_key, nombre in permisos_req.items():
-        if not getattr(permisos, perm_key, False):
-            faltantes.append(nombre)
-    
-    if faltantes:
-        msg = (
-            f"⚠️ **Faltan permisos del bot en este canal:**\n"
-            + "\n".join(f"• {p}" for p in faltantes)
-            + "\n\n**Sin esos permisos, no podré detectar tus reacciones.**\n"
-            "Pídele a un admin que los active, o usa el modo chat escribiendo el número."
-        )
-        return False, msg
-    
-    return True, None
-
-
-# =========================================================
-# 7. COMANDO /buscar
+# 8. COMANDO /buscar
 # =========================================================
 @bot.tree.command(name="buscar", description="Busca y elige con reacciones o escribiendo el número.")
 @app_commands.describe(query="Nombre de la canción a buscar")
 async def buscar(interaction: discord.Interaction, query: str):
     await interaction.response.send_message(f"🔍 Buscando **{query}**...")
     
-    # Verificar permisos PRIMERO
-    ok_permisos, msg_error = await verificar_permisos_canal(interaction)
-    if not ok_permisos:
-        await interaction.edit_original_response(content=msg_error)
-        return
-    
-    # Buscar
     try:
         loop = asyncio.get_event_loop()
         resultados = await asyncio.wait_for(
             loop.run_in_executor(None, buscar_resultados_sync, query),
-            timeout=60.0
+            timeout=90.0
         )
     except asyncio.TimeoutError:
         await interaction.edit_original_response(content="❌ Timeout buscando.")
@@ -503,7 +651,13 @@ async def buscar(interaction: discord.Interaction, query: str):
     
     if not resultados:
         await interaction.edit_original_response(
-            content=f"❌ Sin resultados para `{query}`."
+            content=(
+                f"❌ **Nada reproducible para** `{query}`\n\n"
+                f"**Sugerencias:**\n"
+                f"• Añade el artista: `{query} artista`\n"
+                f"• Prueba variantes: `/buscar {query} slowed`\n"
+                f"• Prueba otro nombre parecido"
+            )
         )
         return
     
@@ -512,17 +666,24 @@ async def buscar(interaction: discord.Interaction, query: str):
     n_originales = sum(1 for r in resultados if r.get('categoria') == 'ORIGINAL')
     n_otros = len(resultados) - n_originales
     
+    proveedores = {}
+    for r in resultados:
+        p = r.get('proveedor', 'soundcloud')
+        proveedores[p] = proveedores.get(p, 0) + 1
+    prov_texto = ' · '.join(f"{p}: {n}" for p, n in proveedores.items())
+    
     descripcion = f"**{len(resultados)} canciones disponibles**"
     if n_originales > 0:
         descripcion += f" · ✅ {n_originales} originales"
     if n_otros > 0:
-        descripcion += f" · ⚠️ {n_otros} versiones alternativas"
+        descripcion += f" · ⚠️ {n_otros} alternativas"
+    descripcion += f"\n_Fuente: {prov_texto}_"
     
     descripcion += (
         "\n\n**Elige de 2 formas:**\n"
         "• 🎯 **Reacciona** con el emoji numérico\n"
         "• 💬 **Escribe** el número en el chat\n\n"
-        "Para cancelar: ❌ o `cancelar`"
+        "Cancelar: ❌ o `cancelar`"
     )
     
     embed = discord.Embed(
@@ -536,6 +697,7 @@ async def buscar(interaction: discord.Interaction, query: str):
         titulo = r['titulo'][:80]
         uploader = r.get('uploader', 'Desconocido')[:40]
         categoria = r.get('categoria', 'ORIGINAL')
+        proveedor = r.get('proveedor', 'soundcloud')
         
         cat_emoji_map = {
             'ORIGINAL': '✅', 'COVER': '🎤', 'REMIX': '🎧',
@@ -544,9 +706,12 @@ async def buscar(interaction: discord.Interaction, query: str):
         }
         cat_emoji = cat_emoji_map.get(categoria, '⚠️')
         
+        prov_emoji = {'soundcloud': '☁️', 'bandcamp': '🎼', 'archiveorg': '📚'}
+        p_emoji = prov_emoji.get(proveedor, '🎵')
+        
         embed.add_field(
             name=f"**{i+1}.** {cat_emoji} {titulo}",
-            value=f"⏱️ `{dur}` | 👤 {uploader} | `{categoria}`",
+            value=f"⏱️ `{dur}` | 👤 {uploader} | `{categoria}` | {p_emoji}",
             inline=False
         )
     
@@ -554,8 +719,6 @@ async def buscar(interaction: discord.Interaction, query: str):
     
     mensaje = await interaction.edit_original_response(content=None, embed=embed)
     
-    # Añadir reacciones una por una
-    print(f"🎯 Añadiendo {len(resultados)} reacciones...")
     reacciones_ok = 0
     for i in range(len(resultados)):
         try:
@@ -564,17 +727,14 @@ async def buscar(interaction: discord.Interaction, query: str):
         except discord.Forbidden:
             await interaction.edit_original_response(
                 content=(
-                    "❌ **No puedo añadir reacciones en este canal.**\n\n"
-                    "**Solución rápida:** Escribe el número directamente en el chat.\n"
-                    f"Ejemplo: escribe `1` para elegir la primera canción.\n\n"
-                    "O pídele a un admin que active el permiso `Add Reactions`."
+                    "⚠️ **No puedo añadir reacciones.**\n"
+                    "Escribe el número en el chat para elegir."
                 ),
                 embed=embed
             )
-            # Continuar sin reacciones, solo con modo chat
             break
         except Exception as e:
-            print(f"⚠️ Error añadiendo reacción {i}: {e}")
+            print(f"⚠️ Error reacción {i}: {e}")
             continue
     
     try:
@@ -582,14 +742,10 @@ async def buscar(interaction: discord.Interaction, query: str):
     except Exception:
         pass
     
-    print(f"✅ {reacciones_ok}/{len(resultados)} reacciones añadidas")
-    
-    # Esperar selección
     idx, forma = await esperar_seleccion(
         interaction, mensaje, len(resultados), timeout=90.0
     )
     
-    # Limpiar reacciones
     try:
         await mensaje.clear_reactions()
     except Exception:
@@ -607,14 +763,13 @@ async def buscar(interaction: discord.Interaction, query: str):
         return
     
     elegido = resultados[idx]
-    print(f"🎵 Elegido [{forma}]: {elegido['titulo']}")
     
     await interaction.edit_original_response(
         content=f"⏳ Cargando **{elegido['titulo']}**...",
         embed=None
     )
     
-    # Conectar al canal
+    # Conectar al canal de voz
     if not interaction.guild.voice_client:
         if interaction.user.voice:
             try:
@@ -628,10 +783,10 @@ async def buscar(interaction: discord.Interaction, query: str):
     
     vc = interaction.guild.voice_client
     
-    # Reproducir SOLO el elegido (sin fallback a otros)
+    # Reproducir
     try:
         loop = asyncio.get_event_loop()
-        stream_url, titulo_final = await asyncio.wait_for(
+        stream_url, titulo_final, duracion = await asyncio.wait_for(
             loop.run_in_executor(None, extraer_stream_de_url_sync, elegido['url']),
             timeout=25.0
         )
@@ -640,31 +795,75 @@ async def buscar(interaction: discord.Interaction, query: str):
             content=(
                 f"❌ **No se pudo reproducir** `{elegido['titulo'][:60]}`\n"
                 f"Motivo: `{str(e)[:100]}`\n\n"
-                f"**Prueba eligiendo otra opción** con `/buscar`."
+                f"Prueba con otra opción."
             )
         )
         return
     
+    # Detener barra anterior
+    guild_id = interaction.guild.id
+    if guild_id in barras_activas:
+        barras_activas[guild_id].detener()
+        del barras_activas[guild_id]
+    
+    # Crear barra
+    barra = BarraProgreso(
+        bot=bot,
+        interaction=interaction,
+        titulo=titulo_final,
+        duracion_total=duracion or elegido.get('duracion'),
+        canal_voz=vc,
+        thumbnail=None,
+        uploader=elegido.get('uploader'),
+        categoria=elegido.get('categoria'),
+    )
+    
+    guild = interaction.guild
+    
     def after_playing(error):
         if error:
-            print(f"⚠️ Error: {error}")
+            print(f"⚠️ Error reproduciendo: {error}")
+        # Detener barra y restaurar nickname
+        if guild_id in barras_activas:
+            barras_activas[guild_id].detener()
+            del barras_activas[guild_id]
+        # Restaurar nickname cuando termina
+        asyncio.run_coroutine_threadsafe(
+            restaurar_nickname_bot(guild),
+            bot.loop
+        )
     
     try:
         if vc.is_playing():
             vc.stop()
+        
         source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
         vc.play(source, after=after_playing)
-        await interaction.edit_original_response(
-            content=f"🎵 Reproduciendo: **{titulo_final}**"
+        
+        # ============ CAMBIAR NICKNAME ============
+        await cambiar_nickname_bot(
+            guild, titulo_final, elegido.get('categoria')
         )
+        
+        # Editar mensaje con la barra inicial
+        embed_inicial = barra.construir_embed()
+        await interaction.edit_original_response(content=None, embed=embed_inicial)
+        barra.mensaje = await interaction.original_response()
+        
+        # Iniciar conteo y loop
+        barra.iniciar()
+        barra.tarea = asyncio.create_task(barra.actualizar_loop())
+        barras_activas[guild_id] = barra
+        
+        print(f"▶️ Reproduciendo: {titulo_final} ({_formatear_duracion(duracion)})")
     except Exception as e:
         await interaction.edit_original_response(content=f"❌ Error: {e}")
 
 
 # =========================================================
-# 8. COMANDO /play
+# 9. COMANDO /play
 # =========================================================
-@bot.tree.command(name="play", description="Reproduce el primer ORIGINAL disponible.")
+@bot.tree.command(name="play", description="Reproduce el primer resultado disponible.")
 @app_commands.describe(query="Nombre de la canción")
 async def play(interaction: discord.Interaction, query: str):
     await interaction.response.send_message(f"⏳ Buscando **{query}**...")
@@ -673,14 +872,16 @@ async def play(interaction: discord.Interaction, query: str):
         loop = asyncio.get_event_loop()
         resultados = await asyncio.wait_for(
             loop.run_in_executor(None, buscar_resultados_sync, query),
-            timeout=60.0
+            timeout=90.0
         )
     except Exception as e:
         await interaction.edit_original_response(content=f"❌ Error: {str(e)[:300]}")
         return
     
     if not resultados:
-        await interaction.edit_original_response(content=f"❌ Sin resultados para `{query}`.")
+        await interaction.edit_original_response(
+            content=f"❌ Sin resultados reproducibles para `{query}`."
+        )
         return
     
     originales = [r for r in resultados if r.get('categoria') == 'ORIGINAL']
@@ -698,6 +899,8 @@ async def play(interaction: discord.Interaction, query: str):
             return
     
     vc = interaction.guild.voice_client
+    guild = interaction.guild
+    guild_id = guild.id
     
     for i, r in enumerate(a_probar):
         cat = r.get('categoria', 'ORIGINAL')
@@ -706,125 +909,14 @@ async def play(interaction: discord.Interaction, query: str):
                 content=f"⏳ Probando {i+1}/{len(a_probar)} [{cat}]: **{r['titulo'][:55]}**..."
             )
             loop = asyncio.get_event_loop()
-            stream_url, titulo = await asyncio.wait_for(
+            stream_url, titulo, duracion = await asyncio.wait_for(
                 loop.run_in_executor(None, extraer_stream_de_url_sync, r['url']),
                 timeout=20.0
             )
             
-            def after_playing(error):
-                if error:
-                    print(f"⚠️ Error: {error}")
+            if guild_id in barras_activas:
+                barras_activas[guild_id].detener()
+                del barras_activas[guild_id]
             
-            if vc.is_playing():
-                vc.stop()
-            source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
-            vc.play(source, after=after_playing)
-            
-            aviso = ""
-            if cat != 'ORIGINAL':
-                aviso = f"\n_(no encontré el original, usé un `{cat}`)_"
-            
-            await interaction.edit_original_response(
-                content=f"🎵 Reproduciendo: **{titulo}**{aviso}"
-            )
-            return
-        except Exception as e:
-            print(f"⚠️ Fallo {i+1}: {str(e)[:80]}")
-            continue
-    
-    await interaction.edit_original_response(
-        content=f"❌ Ningún resultado reproducible para `{query}`."
-    )
-
-
-# =========================================================
-# 9. OTROS COMANDOS
-# =========================================================
-@bot.tree.command(name="join", description="Une al bot a tu canal de voz.")
-async def join(interaction: discord.Interaction):
-    if not interaction.user.voice:
-        await interaction.response.send_message("❌ ¡Debes estar en un canal!", ephemeral=True)
-        return
-    channel = interaction.user.voice.channel
-    if interaction.guild.voice_client:
-        await interaction.guild.voice_client.move_to(channel)
-    else:
-        await channel.connect(cls=voice_recv.VoiceRecvClient)
-    await interaction.response.send_message(f"✅ Me uní a **{channel.name}**")
-
-
-@bot.tree.command(name="background", description="Escucha el canal en segundo plano.")
-async def background(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if not vc:
-        await interaction.response.send_message("❌ No estoy en un canal.", ephemeral=True)
-        return
-    try:
-        vc.listen(VoiceActivitySink())
-        await interaction.response.send_message("🎙️ Modo escucha activado.")
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
-
-
-@bot.tree.command(name="leave", description="Desconecta al bot.")
-async def leave(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc:
-        await vc.disconnect()
-        await interaction.response.send_message("👋 Desconectado.")
-    else:
-        await interaction.response.send_message("❌ No estoy en un canal.", ephemeral=True)
-
-
-@bot.tree.command(name="diagnostico", description="Muestra el estado de los intents y permisos.")
-async def diagnostico(interaction: discord.Interaction):
-    """Comando para verificar por qué no funcionan las reacciones."""
-    embed = discord.Embed(
-        title="🔧 Diagnóstico del bot",
-        color=discord.Color.blue()
-    )
-    
-    # Intents
-    embed.add_field(
-        name="Intents activos",
-        value=(
-            f"• message_content: `{bot.intents.message_content}`\n"
-            f"• reactions: `{bot.intents.reactions}`\n"
-            f"• voice_states: `{bot.intents.voice_states}`\n"
-            f"• guilds: `{bot.intents.guilds}`\n"
-            f"• members: `{bot.intents.members}`"
-        ),
-        inline=False
-    )
-    
-    # Permisos en el canal
-    channel = interaction.channel
-    if isinstance(channel, (discord.TextChannel, discord.Thread)):
-        me = interaction.guild.me
-        permisos = channel.permissions_for(me)
-        embed.add_field(
-            name="Permisos en este canal",
-            value=(
-                f"• Add Reactions: `{permisos.add_reactions}`\n"
-                f"• Read Message History: `{permisos.read_message_history}`\n"
-                f"• Send Messages: `{permisos.send_messages}`\n"
-                f"• Manage Messages: `{permisos.manage_messages}`\n"
-                f"• Embed Links: `{permisos.embed_links}`"
-            ),
-            inline=False
-        )
-    
-    embed.set_footer(text="Si algo está en False, actívalo en el Developer Portal o en los permisos del canal.")
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-# =========================================================
-# 10. EJECUCIÓN
-# =========================================================
-if __name__ == "__main__":
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        print("❌ ERROR: DISCORD_TOKEN no configurado")
-        exit(1)
-    bot.run(token)
+            barra = BarraProgreso(
+                bot=
