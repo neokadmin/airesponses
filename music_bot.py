@@ -47,8 +47,8 @@ load_dotenv()
 TEMP_DIR = "temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Nombre original del bot (por si hay que restaurarlo)
-NOMBRE_ORIGINAL = None  # Se establecerá en setup_hook
+# Nombre original del bot (para restaurar)
+NOMBRE_ORIGINAL = None
 
 # =========================================================
 # 3. CONFIGURACIÓN YT-DLP
@@ -298,15 +298,15 @@ def formatear_tiempo(segundos: float) -> str:
 
 class BarraProgreso:
     def __init__(self, bot, interaction, titulo, duracion_total, canal_voz,
-                 thumbnail=None, uploader=None, categoria=None):
+                 uploader=None, categoria=None, guild=None):
         self.bot = bot
         self.interaction = interaction
         self.titulo = titulo
         self.duracion_total = duracion_total or 0
         self.canal_voz = canal_voz
-        self.thumbnail = thumbnail
         self.uploader = uploader
         self.categoria = categoria
+        self.guild = guild
         self.inicio = None
         self.pausado = False
         self.tiempo_pausado = 0
@@ -375,9 +375,6 @@ class BarraProgreso:
             cat_emoji = cat_emoji_map.get(self.categoria, '⚠️')
             embed.add_field(name="🏷️ Tipo", value=f"{cat_emoji} {self.categoria}", inline=True)
         
-        if self.thumbnail:
-            embed.set_thumbnail(url=self.thumbnail)
-        
         embed.set_footer(text="La barra se actualiza cada 5 segundos")
         return embed
     
@@ -424,30 +421,22 @@ class BarraProgreso:
             self.tarea.cancel()
 
 
-# Registro global de barras activas por guild
 barras_activas = {}
 
 
 # =========================================================
-# 5. FUNCIONES DE NICKNAME DINÁMICO
+# 5. NICKNAME DINÁMICO
 # =========================================================
 async def cambiar_nickname_bot(guild, nombre_cancion, categoria=None):
-    """
-    Cambia el apodo del bot en el servidor al nombre de la canción actual.
-    Formato: '🎵 Nombre de la canción' (limitado a 32 caracteres)
-    """
     if guild is None:
         return False
     
-    # Limpiar el título: quitar caracteres raros y limitar longitud
     titulo_limpio = nombre_cancion.strip()
-    # Quitar " - Topic", "(Official Audio)" etc comunes
     for sufijo in [' - Topic', ' (Official Audio)', ' (Official Video)',
                    ' (Audio)', ' (Lyrics)', ' (Lyric Video)', ' (Official)']:
         if titulo_limpio.endswith(sufijo):
             titulo_limpio = titulo_limpio[:-len(sufijo)].strip()
     
-    # Emoji según categoría
     if categoria == 'COVER':
         prefijo = "🎤 "
     elif categoria == 'REMIX':
@@ -463,16 +452,14 @@ async def cambiar_nickname_bot(guild, nombre_cancion, categoria=None):
     else:
         prefijo = "🎵 "
     
-    # Discord limita el nickname a 32 caracteres
     max_len = 32 - len(prefijo)
     if len(titulo_limpio) > max_len:
         titulo_limpio = titulo_limpio[:max_len - 1].rstrip() + "…"
     
     nuevo_nick = f"{prefijo}{titulo_limpio}"
     
-    # Guardar el nombre original si no está guardado
     global NOMBRE_ORIGINAL
-    if NOMBRE_ORIGINAL is None:
+    if NOMBRE_ORIGINAL is None and guild.me:
         NOMBRE_ORIGINAL = guild.me.display_name
     
     try:
@@ -488,21 +475,14 @@ async def cambiar_nickname_bot(guild, nombre_cancion, categoria=None):
 
 
 async def restaurar_nickname_bot(guild):
-    """
-    Restaura el nickname original del bot.
-    Se llama cuando termina la reproducción y no hay nada más.
-    """
     if guild is None:
         return False
     
     global NOMBRE_ORIGINAL
     
     try:
-        if NOMBRE_ORIGINAL:
-            await guild.me.edit(nick=NOMBRE_ORIGINAL)
-        else:
-            await guild.me.edit(nick=None)  # Restaurar nombre por defecto
-        print(f"🏷️ Nickname restaurado")
+        await guild.me.edit(nick=NOMBRE_ORIGINAL)
+        print("🏷️ Nickname restaurado")
         return True
     except Exception as e:
         print(f"⚠️ Error restaurando nickname: {e}")
@@ -719,11 +699,9 @@ async def buscar(interaction: discord.Interaction, query: str):
     
     mensaje = await interaction.edit_original_response(content=None, embed=embed)
     
-    reacciones_ok = 0
     for i in range(len(resultados)):
         try:
             await mensaje.add_reaction(EMOJIS_NUMEROS[i])
-            reacciones_ok += 1
         except discord.Forbidden:
             await interaction.edit_original_response(
                 content=(
@@ -769,7 +747,6 @@ async def buscar(interaction: discord.Interaction, query: str):
         embed=None
     )
     
-    # Conectar al canal de voz
     if not interaction.guild.voice_client:
         if interaction.user.voice:
             try:
@@ -783,7 +760,6 @@ async def buscar(interaction: discord.Interaction, query: str):
     
     vc = interaction.guild.voice_client
     
-    # Reproducir
     try:
         loop = asyncio.get_event_loop()
         stream_url, titulo_final, duracion = await asyncio.wait_for(
@@ -800,34 +776,30 @@ async def buscar(interaction: discord.Interaction, query: str):
         )
         return
     
-    # Detener barra anterior
     guild_id = interaction.guild.id
+    guild = interaction.guild
+    
     if guild_id in barras_activas:
         barras_activas[guild_id].detener()
         del barras_activas[guild_id]
     
-    # Crear barra
     barra = BarraProgreso(
         bot=bot,
         interaction=interaction,
         titulo=titulo_final,
         duracion_total=duracion or elegido.get('duracion'),
         canal_voz=vc,
-        thumbnail=None,
         uploader=elegido.get('uploader'),
         categoria=elegido.get('categoria'),
+        guild=guild,
     )
-    
-    guild = interaction.guild
     
     def after_playing(error):
         if error:
             print(f"⚠️ Error reproduciendo: {error}")
-        # Detener barra y restaurar nickname
         if guild_id in barras_activas:
             barras_activas[guild_id].detener()
             del barras_activas[guild_id]
-        # Restaurar nickname cuando termina
         asyncio.run_coroutine_threadsafe(
             restaurar_nickname_bot(guild),
             bot.loop
@@ -840,17 +812,12 @@ async def buscar(interaction: discord.Interaction, query: str):
         source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
         vc.play(source, after=after_playing)
         
-        # ============ CAMBIAR NICKNAME ============
-        await cambiar_nickname_bot(
-            guild, titulo_final, elegido.get('categoria')
-        )
+        await cambiar_nickname_bot(guild, titulo_final, elegido.get('categoria'))
         
-        # Editar mensaje con la barra inicial
         embed_inicial = barra.construir_embed()
         await interaction.edit_original_response(content=None, embed=embed_inicial)
         barra.mensaje = await interaction.original_response()
         
-        # Iniciar conteo y loop
         barra.iniciar()
         barra.tarea = asyncio.create_task(barra.actualizar_loop())
         barras_activas[guild_id] = barra
@@ -919,4 +886,32 @@ async def play(interaction: discord.Interaction, query: str):
                 del barras_activas[guild_id]
             
             barra = BarraProgreso(
-                bot=
+                bot=bot,
+                interaction=interaction,
+                titulo=titulo,
+                duracion_total=duracion or r.get('duracion'),
+                canal_voz=vc,
+                uploader=r.get('uploader'),
+                categoria=cat,
+                guild=guild,
+            )
+            
+            def after_playing(error):
+                if error:
+                    print(f"⚠️ Error: {error}")
+                if guild_id in barras_activas:
+                    barras_activas[guild_id].detener()
+                    del barras_activas[guild_id]
+                asyncio.run_coroutine_threadsafe(
+                    restaurar_nickname_bot(guild),
+                    bot.loop
+                )
+            
+            if vc.is_playing():
+                vc.stop()
+            
+            source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
+            vc.play(source, after=after_playing)
+            
+            await cambiar_nickname_bot(guild, titulo, cat)
+            
